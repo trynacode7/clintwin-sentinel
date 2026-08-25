@@ -1,0 +1,33 @@
+# ICU Digital Twin System — Backend Dependencies
+
+# Core ML
+torch>=2.0.0
+numpy>=1.24.0
+pandas>=2.0.0
+scikit-learn>=1.3.0
+joblib>=1.3.0
+
+# Baseline comparison model (backend/baselines.py::train_gbt) — not used by
+# the live LSTM/Transformer API, only by the baseline-comparison tests.
+xgboost>=2.0.0
+
+# Explainability
+shap>=0.42.0
+
+# API
+fastapi>=0.100.0
+uvicorn[standard]>=0.23.0
+pydantic>=2.0.0
+
+# Utilities
+python-multipart>=0.0.6
+
+# Test-only — fastapi.testclient.TestClient (used throughout tests/) requires
+# httpx with the http2 extra.
+httpx[http2]>=0.27.0
+
+# Optional — only needed for backend/mimic_adapter/bigquery_loader.py (the
+# BigQuery-subset MIMIC-IV loader). Not required for the default synthetic
+# pipeline or the local-CSV real-data path (extract_real_mimic_to_ml_dataset.py).
+# google-cloud-bigquery>=3.11.0
+# db-dtypes>=1.1.0

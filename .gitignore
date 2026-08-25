@@ -1,0 +1,50 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ipynb_checkpoints/
+venv/
+.venv/
+env/
+
+# --- Node / frontend ---
+node_modules/
+frontend/dist/
+frontend/build/
+frontend/coverage/
+frontend/.vite/
+vite.config.js.timestamp-*.mjs
+npm-debug.log*
+
+# --- Generated data (regenerate with generate_synthetic_data.py) ---
+data/synthetic/raw/*.csv
+data/synthetic/processed/*.csv
+data/synthetic/processed/*.json
+
+# --- Real MIMIC-IV data — must never be committed ---
+data/real/raw/
+data/real/*.csv
+
+# --- Trained model artifacts (regenerate with backend/train.py) ---
+models/*.pt
+models/*.joblib
+models/*.pth
+models/*.ckpt
+
+# --- Logs / runtime ---
+*.log
+logs/
+
+# --- OS / editor junk ---
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+
+# --- Local holding areas for anything staged for manual deletion ---
+_to_delete/
+**/_to_delete/
+_REPO_CLEANUP_TRASH/
