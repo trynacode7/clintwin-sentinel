@@ -53,6 +53,11 @@ TRANSFORMER_MODEL_PATH = os.path.join(MODEL_DIR, "transformer_model.pt")
 LOGREG_MODEL_PATH = os.path.join(MODEL_DIR, "logreg_baseline.joblib")
 GBT_MODEL_PATH = os.path.join(MODEL_DIR, "gbt_baseline.joblib")
 
+# Phase 3 BioGears dedicated 46-feature model artifacts
+BIOGEARS_LSTM_MODEL_PATH = os.path.join(MODEL_DIR, "biogears_lstm_model.pt")
+BIOGEARS_TRANSFORMER_MODEL_PATH = os.path.join(MODEL_DIR, "biogears_transformer_model.pt")
+BIOGEARS_SCALER_PATH = os.path.join(MODEL_DIR, "biogears_scaler.joblib")
+
 os.makedirs(MODEL_DIR, exist_ok=True)
 
 # ─── Feature Definitions ────────────────────────────────────────────────────

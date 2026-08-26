@@ -313,17 +313,16 @@ def test_missing_scenario_file_raises_process_error(bridge):
 @skip_no_biogears
 def test_timeout_error_on_very_short_timeout(tmp_path):
     """A 1-second timeout must trigger BioGearsTimeoutError."""
+    if not _tinytest_present:
+        pytest.skip("ClinTwinTinyTest.xml scenario file is not present on disk")
     cfg = BioGearsConfig(
         executable=BIOGEARS_EXE,
         timeout_seconds=1,
         tmp_dir=str(tmp_path),
     )
     b = BioGearsBridge(config=cfg)
-    # We need a valid XML to get past the arg check — use TinyTest if available,
-    # otherwise any plausible path (BioGears will timeout before it matters)
-    xml_path = TINY_TEST_XML if _tinytest_present else BIOGEARS_EXE
     with pytest.raises(BioGearsTimeoutError) as exc_info:
-        b.run_scenario_file(xml_path, scenario_name="TimeoutTest")
+        b.run_scenario_file(TINY_TEST_XML, scenario_name="TimeoutTest")
     assert exc_info.value.timeout_seconds == 1
 
 

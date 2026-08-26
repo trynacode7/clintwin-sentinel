@@ -32,6 +32,11 @@ models/*.pt
 models/*.joblib
 models/*.pth
 models/*.ckpt
+!models/biogears_*.pt
+!models/biogears_*.joblib
+
+# --- BioGears raw simulation outputs (generate via bg-scenario) ---
+biogears_runs/
 
 # --- Logs / runtime ---
 *.log

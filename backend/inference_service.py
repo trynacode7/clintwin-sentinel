@@ -242,8 +242,41 @@ class InferenceService:
             )
 
         checkpoint = torch.load(path, map_location="cpu", weights_only=False)
-        model = ModelClass(input_size=checkpoint["input_size"])
-        model.load_state_dict(checkpoint["model_state_dict"])
+        input_size = checkpoint["input_size"]
+        state_dict = checkpoint["model_state_dict"]
+
+        if model_type == "lstm":
+            hidden_size = state_dict["input_proj.0.weight"].shape[0] if "input_proj.0.weight" in state_dict else config.LSTM_HIDDEN_SIZE
+            layer_indices = [
+                int(k.split("_l")[1].split("_")[0])
+                for k in state_dict.keys()
+                if "lstm.weight_ih_l" in k
+            ]
+            num_layers = max(layer_indices) + 1 if layer_indices else config.LSTM_NUM_LAYERS
+            bidirectional = any("reverse" in k for k in state_dict.keys())
+            model = ModelClass(
+                input_size=input_size,
+                hidden_size=hidden_size,
+                num_layers=num_layers,
+                bidirectional=bidirectional,
+            )
+        else:
+            d_model = state_dict["embedding.0.weight"].shape[0] if "embedding.0.weight" in state_dict else config.TRANSFORMER_D_MODEL
+            layer_indices = [
+                int(k.split("encoder_layers.")[1].split(".")[0])
+                for k in state_dict.keys()
+                if "encoder_layers." in k
+            ]
+            num_layers = max(layer_indices) + 1 if layer_indices else config.TRANSFORMER_NUM_LAYERS
+            dim_feedforward = state_dict["encoder_layers.0.linear1.weight"].shape[0] if "encoder_layers.0.linear1.weight" in state_dict else config.TRANSFORMER_DIM_FEEDFORWARD
+            model = ModelClass(
+                input_size=input_size,
+                d_model=d_model,
+                num_layers=num_layers,
+                dim_feedforward=dim_feedforward,
+            )
+
+        model.load_state_dict(state_dict)
         model.eval()
 
         self.model = model

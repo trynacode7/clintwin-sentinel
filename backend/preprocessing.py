@@ -72,11 +72,14 @@ def load_data(path: Optional[str] = None) -> pd.DataFrame:
         )
 
     logger.info(f"Loading data from {path} (DATA_MODE={config.DATA_MODE})")
-    df = pd.read_csv(path, parse_dates=[config.TIME_COL])
+    df = pd.read_csv(path)
     logger.info(f"Loaded {len(df)} rows, {df['subject_id'].nunique()} patients")
 
-    # Ensure charttime is datetime
-    df[config.TIME_COL] = pd.to_datetime(df[config.TIME_COL])
+    # Ensure charttime is datetime (supporting date-shifted years > 2262)
+    try:
+        df[config.TIME_COL] = pd.to_datetime(df[config.TIME_COL].values.astype("datetime64[us]"))
+    except Exception:
+        df[config.TIME_COL] = pd.to_datetime(df[config.TIME_COL])
     
     # Sort by stay_id and time
     df = df.sort_values([*config.ID_COLS, config.TIME_COL]).reset_index(drop=True)

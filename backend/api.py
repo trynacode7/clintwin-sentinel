@@ -112,9 +112,40 @@ def _load_model():
             checkpoint = torch.load(model_path, map_location="cpu", weights_only=False)
             input_size = checkpoint["input_size"]
             _feature_cols = checkpoint["feature_cols"]
-            
-            model = ModelClass(input_size=input_size)
-            model.load_state_dict(checkpoint["model_state_dict"])
+            state_dict = checkpoint["model_state_dict"]
+
+            if model_type == "lstm":
+                hidden_size = state_dict["input_proj.0.weight"].shape[0] if "input_proj.0.weight" in state_dict else config.LSTM_HIDDEN_SIZE
+                layer_indices = [
+                    int(k.split("_l")[1].split("_")[0])
+                    for k in state_dict.keys()
+                    if "lstm.weight_ih_l" in k
+                ]
+                num_layers = max(layer_indices) + 1 if layer_indices else config.LSTM_NUM_LAYERS
+                bidirectional = any("reverse" in k for k in state_dict.keys())
+                model = ICUBiLSTM(
+                    input_size=input_size,
+                    hidden_size=hidden_size,
+                    num_layers=num_layers,
+                    bidirectional=bidirectional,
+                )
+            else:
+                d_model = state_dict["embedding.0.weight"].shape[0] if "embedding.0.weight" in state_dict else config.TRANSFORMER_D_MODEL
+                layer_indices = [
+                    int(k.split("encoder_layers.")[1].split(".")[0])
+                    for k in state_dict.keys()
+                    if "encoder_layers." in k
+                ]
+                num_layers = max(layer_indices) + 1 if layer_indices else config.TRANSFORMER_NUM_LAYERS
+                dim_feedforward = state_dict["encoder_layers.0.linear1.weight"].shape[0] if "encoder_layers.0.linear1.weight" in state_dict else config.TRANSFORMER_DIM_FEEDFORWARD
+                model = ICUTransformer(
+                    input_size=input_size,
+                    d_model=d_model,
+                    num_layers=num_layers,
+                    dim_feedforward=dim_feedforward,
+                )
+
+            model.load_state_dict(state_dict)
             model.eval()
             _model = (model, model_type)
             return
@@ -900,6 +931,236 @@ async def predict(request: PredictRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ============================================================
+# Phase 3 - Real BioGears Physiology & Inference Integration
+# ============================================================
+
+@app.post("/biogears/predict")
+@app.post("/api/biogears/predict")
+async def predict_biogears(request: Optional[dict] = None):
+    """
+    Run real ICUBiLSTM inference on a standardized 6-hour BioGears
+    simulation output, returning raw risk and 256-D latent state.
+    """
+    try:
+        from backend.biogears_adapter import BioGearsFeatureTransformer
+        from backend.biogears_inference import (
+            prepare_biogears_input,
+            run_lstm_inference,
+            run_lstm_trajectory,
+            load_biogears_csv,
+        )
+
+        request = request or {}
+
+        if not os.path.exists(config.LSTM_MODEL_PATH):
+            raise HTTPException(
+                status_code=503,
+                detail="Trained LSTM model not found at models/lstm_model.pt.",
+            )
+
+        checkpoint = torch.load(
+            config.LSTM_MODEL_PATH,
+            map_location="cpu",
+            weights_only=False,
+        )
+        feature_cols = checkpoint["feature_cols"]
+
+        biogears_csv = request.get(
+            "csv_path",
+            os.path.join(
+                config.PROJECT_ROOT,
+                "biogears_runs",
+                "stable_6hour_results.csvResults.csv",
+            ),
+        )
+
+        if not os.path.exists(biogears_csv):
+            raise HTTPException(
+                status_code=404,
+                detail=f"BioGears results file not found: {biogears_csv}",
+            )
+
+        patient_id = request.get("patient_id", "biogears_patient_001")
+        lab_mode = request.get("lab_mode", "calibrated_prior")
+
+        # Prepare the exact 72 x 46 input expected by the trained LSTM.
+        X, mask, df = prepare_biogears_input(
+            input_path=biogears_csv,
+            feature_cols=feature_cols,
+            patient_id=patient_id,
+            lab_mode=lab_mode,
+        )
+
+        # Run the real trained model.
+        result = run_lstm_inference(X)
+
+        # Extract the learned latent state at each timestep.
+        trajectory_result = run_lstm_trajectory(X)
+        latent_trajectory = trajectory_result["latent_trajectory"]
+
+        # Project latent states to 2D PCA space
+        all_z = [np.array(pt["latent_state"], dtype=np.float32) for pt in latent_trajectory]
+        if len(all_z) >= 2:
+            from sklearn.decomposition import PCA
+            pca = PCA(n_components=2)
+            pca_coords = pca.fit_transform(np.array(all_z))
+            for idx, pt in enumerate(latent_trajectory):
+                pt["z_2d"] = [float(pca_coords[idx, 0]), float(pca_coords[idx, 1])]
+        else:
+            for pt in latent_trajectory:
+                pt["z_2d"] = [0.0, 0.0]
+
+        raw_df = load_biogears_csv(biogears_csv, patient_id=patient_id, lab_mode=lab_mode)
+        latest_raw = raw_df.iloc[-1]
+
+        timeline = (
+            raw_df.set_index("charttime")[
+                ["heart_rate", "map", "resp_rate", "spo2", "temp"]
+            ]
+            .resample("5min")
+            .mean()
+            .ffill()
+            .tail(72)
+            .reset_index()
+        )
+
+        vitals_timeline = {
+            "timestamps": [str(t) for t in timeline["charttime"]],
+            "heart_rate": [float(v) for v in timeline["heart_rate"]],
+            "map": [float(v) for v in timeline["map"]],
+            "resp_rate": [float(v) for v in timeline["resp_rate"]],
+            "spo2": [float(v) for v in timeline["spo2"]],
+            "temp": [float(v) for v in timeline["temp"]],
+        }
+
+        return {
+            "source": "BioGears",
+            "simulation_file": os.path.basename(biogears_csv),
+            "patient_id": patient_id,
+            "risk_probability": result["risk_probability"],
+            "risk_percentage": result["risk_percentage"],
+            "risk_class": result["risk_class"],
+            "input_shape": result["input_shape"],
+            "timesteps": int(X.shape[0]),
+            "features": int(X.shape[1]),
+            "latent_state": result["latent_state"],
+            "latent_dimension": result["latent_dimension"],
+            "latent_trajectory": latent_trajectory,
+            "latest_vitals": {
+                "heart_rate": float(latest_raw["heart_rate"]),
+                "map": float(latest_raw["map"]),
+                "resp_rate": float(latest_raw["resp_rate"]),
+                "spo2": float(latest_raw["spo2"]),
+                "temp": float(latest_raw["temp"]),
+            },
+            "vitals_timeline": vitals_timeline,
+            "simulation_time_seconds": float(latest_raw["time_seconds"]),
+            "charttime": str(latest_raw["charttime"]),
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"BioGears prediction error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/biogears/intervene")
+@app.post("/api/biogears/intervene")
+async def intervene_biogears(request: Optional[dict] = None):
+    """
+    Run a real BioGears intervention scenario and compare
+    baseline vs post-intervention LSTM predictions.
+    """
+    try:
+        from backend.biogears_intervention import run_biogears_intervention
+
+        request = request or {}
+        intervention = str(request.get("intervention", "saline")).lower()
+        patient_id = str(request.get("patient_id", "biogears_intervention_patient"))
+
+        result = run_biogears_intervention(
+            intervention=intervention,
+            patient_id=patient_id,
+        )
+        return result
+
+    except Exception as e:
+        logger.error(f"BioGears intervention error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/v1/biogears/simulate")
+async def submit_simulation(request: Optional[dict] = None):
+    """
+    Submit an asynchronous simulation job to the background ThreadPoolExecutor.
+    Returns immediately with HTTP 200 and the job_id for polling.
+    """
+    try:
+        from backend.biogears_service import job_manager
+
+        request = request or {}
+        patient_id = str(request.get("patient_id", "biogears_patient_001"))
+        scenario_type = str(request.get("scenario_type", "baseline"))
+        lab_mode = str(request.get("lab_mode", "calibrated_prior"))
+
+        csv_path = request.get(
+            "csv_path",
+            os.path.join(
+                config.PROJECT_ROOT,
+                "biogears_runs",
+                "stable_6hour_results.csvResults.csv",
+            ),
+        )
+
+        if not os.path.exists(csv_path):
+            raise HTTPException(
+                status_code=404,
+                detail=f"Simulation source file not found: {csv_path}",
+            )
+
+        job_id = await job_manager.submit_simulation_job(
+            csv_path=csv_path,
+            patient_id=patient_id,
+            scenario_type=scenario_type,
+            lab_mode=lab_mode,
+        )
+
+        return {
+            "job_id": job_id,
+            "status": "queued",
+            "message": "BioGears simulation job submitted successfully.",
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Async simulation submission error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/biogears/jobs/{job_id}")
+async def get_simulation_job(job_id: str):
+    """Poll status and retrieve result payload for a background BioGears job."""
+    from backend.biogears_service import job_manager
+
+    job = job_manager.get_job(job_id)
+    if job is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"BioGears job '{job_id}' not found.",
+        )
+    return job.to_dict()
+
+
+@app.get("/api/v1/biogears/jobs")
+async def list_simulation_jobs():
+    """List recent BioGears background execution jobs."""
+    from backend.biogears_service import job_manager
+    return {"jobs": job_manager.list_jobs()}
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(
@@ -908,3 +1169,4 @@ if __name__ == "__main__":
         port=config.API_PORT,
         reload=True,
     )
+
