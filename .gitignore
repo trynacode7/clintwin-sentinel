@@ -11,6 +11,8 @@ env/
 
 # --- Node / frontend ---
 node_modules/
+package-lock.json
+extracted_lld_pages.txt
 frontend/dist/
 frontend/build/
 frontend/coverage/

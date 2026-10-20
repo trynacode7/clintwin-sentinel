@@ -156,11 +156,14 @@ def create_dataloaders(
         if split not in data_dict:
             continue
         
+        # Validation and test use 1-hour step size (12 timesteps) for representative coverage
+        step = config.SLIDING_STEP if split == "train" else max(1, config.INPUT_WINDOW // 6)
+        
         dataset = ICUDataset(
             df=data_dict[split],
             feature_cols=feature_cols,
             window_size=config.INPUT_WINDOW,
-            step_size=config.SLIDING_STEP if split == "train" else config.INPUT_WINDOW,
+            step_size=step,
         )
         
         loaders[split] = DataLoader(
@@ -186,16 +189,15 @@ def get_all_labels(loader: DataLoader) -> np.ndarray:
 
 
 if __name__ == "__main__":
-    from preprocessing import preprocess, scale_splits
+    from preprocessing import preprocess
     from feature_engineering import engineer_features, get_engineered_feature_cols
-    from labels_sofa import create_labels  # SOFA/Sepsis-3-consistent — NOT labels.py's legacy rule
-
+    from labels import create_labels
+    
     result = preprocess()
-
+    
     for split in ["train", "val", "test"]:
         result[split] = engineer_features(result[split])
         result[split] = create_labels(result[split])
-    result = scale_splits(result)  # scale AFTER engineering + labeling (raw clinical units needed for both)
     
     feature_cols = get_engineered_feature_cols(result["train"])
     loaders = create_dataloaders(result, feature_cols)

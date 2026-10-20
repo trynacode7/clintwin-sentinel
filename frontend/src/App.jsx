@@ -4,33 +4,22 @@ import { usePatientData } from './hooks/usePatientData';
 import RiskPanel from './components/RiskPanel';
 import VitalsTimeline from './components/VitalsTimeline';
 import LatentStateViz from './components/LatentStateViz';
-import AttributionPanel from './components/AttributionPanel';
+import ShapPanel from './components/ShapPanel';
 import AttentionHeatmap from './components/AttentionHeatmap';
 import ClinicalExplanation from './components/ClinicalExplanation';
-import WhatIfPanel from './components/WhatIfPanel';
+import WhatIfSimulationPanel from './components/WhatIfSimulationPanel';
 
 /**
  * App — ICU Digital Twin Dashboard
- *
- * Phase K: wired to the real backend (see hooks/usePatientData.js) —
- * every value rendered below comes from a real trained-model prediction
- * on a real synthetic ICU stay, fetched from backend/api.py. Nothing in
- * this component or its data source fabricates a clinical value.
- *
- * Main layout with 7 panels in a responsive grid:
+ * 
+ * Main layout with 6 panels in a responsive grid:
  * ┌─────────────┬────────────────────────────┐
  * │ Risk Panel  │     Vitals Timeline        │
  * ├─────────────┼──────────────┬─────────────┤
- * │ Attribution │ Latent State │  Attention  │
- * ├───────────────────────┬────────────────────┤
- * │ Clinical Explanation  │  What-If Scenario  │
- * └───────────────────────┴────────────────────┘
- *
- * What-If Scenario (pre-BioGears architecture — see backend/whatif.py
- * and WHATIF_ARCHITECTURE.md): lets the user submit a real, validated
- * intervention scenario and see the real baseline plus an honest
- * "simulation requires BioGears integration" result. No fabricated
- * counterfactual is ever shown.
+ * │ SHAP Panel  │ Latent State │  Attention  │
+ * ├─────────────┴──────────────┴─────────────┤
+ * │         Clinical Explanation              │
+ * └──────────────────────────────────────────┘
  */
 
 function PatientSidebar({ patients, selectedId, onSelect }) {
@@ -104,44 +93,56 @@ function LoadingState() {
   );
 }
 
-function ErrorState({ message }) {
-  return (
-    <div className="flex items-center justify-center h-screen bg-[#0a0e1a] px-6">
-      <div className="glass-panel p-6 max-w-md text-center">
-        <p className="text-red-400 text-sm font-semibold mb-2">Could not load real patient data</p>
-        <p className="text-slate-400 text-xs leading-relaxed">{message}</p>
-        <p className="text-slate-600 text-[10px] mt-3">
-          This dashboard only shows real backend data — it does not fall back to
-          fabricated values. Start the backend (`python -m uvicorn backend.api:app`
-          on port 8000) and reload.
-        </p>
-      </div>
-    </div>
-  );
-}
-
 export default function App() {
   const {
     data,
     loading,
-    detailLoading,
     error,
+    demoMode,
+    mode,
+    setMode,
+    patientLoading,
     selectedPatient,
     setSelectedPatient,
     refresh,
-    intervenableFeatures,
-    runWhatIf,
   } = usePatientData();
   const [sidebarOpen, setSidebarOpen] = useState(true);
 
   if (loading && !data) return <LoadingState />;
-  if (error && !data?.current_patient) return <ErrorState message={error} />;
 
   const currentPatient = data?.current_patient || {};
-  const model = data?.model;
 
   return (
     <div className="min-h-screen bg-[#0a0e1a]">
+      {/* Demo-mode fallback banner (when backend is down) */}
+      {demoMode && (
+        <div className="bg-amber-900/30 border-b border-amber-700/30 px-6 py-1.5 flex items-center gap-2">
+          <div className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
+          <span className="text-xs text-amber-400 font-medium">
+            Backend Offline — FastAPI backend unreachable. Displaying local client fallback data.
+            Start the backend with{' '}
+            <code className="font-mono bg-amber-900/50 px-1 rounded">
+              python -m backend.api
+            </code>
+          </span>
+        </div>
+      )}
+
+      {/* Real ML Mode checkpoint diagnostic banner */}
+      {!demoMode && mode === 'real_ml' && (
+        <div className="bg-purple-950/40 border-b border-purple-800/40 px-6 py-1.5 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <div className="w-2 h-2 rounded-full bg-purple-400 animate-pulse" />
+            <span className="text-xs text-purple-300 font-medium">
+              Real ML Inference Active: Running full 46-feature preprocessing and BiLSTM latent extraction (256-dim) via POST /predict.
+            </span>
+          </div>
+          <span className="text-[11px] text-purple-400/80 bg-purple-900/40 px-2 py-0.5 rounded border border-purple-700/40">
+            BiLSTM retrained: 46 features | 256-D z_t | non-saturated risk
+          </span>
+        </div>
+      )}
+
       {/* Top Header */}
       <header className="sticky top-0 z-50 glass-panel rounded-none border-x-0 border-t-0">
         <div className="flex items-center justify-between px-6 py-3">
@@ -167,14 +168,42 @@ export default function App() {
           </div>
 
           <div className="flex items-center gap-4">
-            {model && (
-              <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-slate-800/50 border border-slate-700/50">
-                <div className={`w-1.5 h-1.5 rounded-full ${detailLoading ? 'bg-amber-400 animate-pulse' : 'bg-emerald-400'}`} />
-                <span className="text-xs text-slate-400">
-                  {detailLoading ? 'Loading real prediction…' : `Real ${model.type.toUpperCase()} inference (epoch ${model.epoch})`}
-                </span>
-              </div>
-            )}
+            {/* Mode Switcher */}
+            <div className="flex items-center rounded-lg bg-slate-900/90 p-1 border border-slate-700/60 shadow-inner">
+              <button
+                onClick={() => setMode('demo')}
+                className={`px-3 py-1 rounded-md text-xs font-semibold transition-all ${
+                  mode === 'demo'
+                    ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 shadow-sm'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                Demo Mode (/patient)
+              </button>
+              <button
+                onClick={() => setMode('real_ml')}
+                className={`px-3 py-1 rounded-md text-xs font-semibold transition-all ${
+                  mode === 'real_ml'
+                    ? 'bg-purple-500/25 text-purple-300 border border-purple-500/50 shadow-sm'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                Real ML Mode (/predict)
+              </button>
+            </div>
+
+            {/* Mode Badge Indicator */}
+            <div className="hidden sm:flex items-center gap-2 px-3 py-1.5 rounded-lg bg-slate-800/50 border border-slate-700/50">
+              <div
+                className={`w-1.5 h-1.5 rounded-full animate-pulse ${
+                  mode === 'real_ml' ? 'bg-purple-400' : 'bg-emerald-400'
+                }`}
+              />
+              <span className="text-xs text-slate-300 font-medium">
+                {mode === 'real_ml' ? 'BiLSTM Live Pipeline' : 'Demo Archetypes'}
+              </span>
+            </div>
+
             <motion.button
               onClick={refresh}
               className="p-2 rounded-lg hover:bg-slate-800/50 transition-colors"
@@ -210,11 +239,18 @@ export default function App() {
         </AnimatePresence>
 
         {/* Main Dashboard Grid */}
-        <main className="flex-1 p-3 overflow-y-auto" style={{ maxHeight: 'calc(100vh - 60px)' }}>
-          {error && currentPatient.id != null && (
-            <div className="mb-3 px-4 py-2 rounded-lg bg-red-500/10 border border-red-500/20 text-xs text-red-300">
-              Could not load the latest data for this patient ({error}) — showing the last successfully
-              loaded real prediction instead.
+        <main className="flex-1 p-3 overflow-y-auto relative" style={{ maxHeight: 'calc(100vh - 60px)' }}>
+          {/* Per-patient loading overlay */}
+          {patientLoading && (
+            <div className="absolute inset-0 z-20 flex items-center justify-center bg-[#0a0e1a]/60 backdrop-blur-sm rounded-xl">
+              <div className="flex flex-col items-center gap-3">
+                <motion.div
+                  className="w-8 h-8 border-2 border-cyan-500/30 border-t-cyan-500 rounded-full"
+                  animate={{ rotate: 360 }}
+                  transition={{ duration: 0.8, repeat: Infinity, ease: 'linear' }}
+                />
+                <p className="text-xs text-slate-400">Loading patient data…</p>
+              </div>
             </div>
           )}
           <div className="grid grid-cols-12 gap-3 auto-rows-auto">
@@ -230,23 +266,19 @@ export default function App() {
               <VitalsTimeline vitals={data?.vitals} />
             </div>
 
-            {/* Row 2: Attribution + Latent State + Attention */}
+            {/* Row 2: SHAP + Latent State + Attention */}
             <div className="col-span-12 lg:col-span-4">
-              <AttributionPanel attributionData={data?.attribution} method={data?.attribution_method} />
+              <ShapPanel shapData={data?.shap} />
             </div>
             <div className="col-span-12 lg:col-span-4">
-              <LatentStateViz
-                trajectory={data?.latent_trajectory}
-                disclaimer={data?.twin_disclaimer}
-                twinState={data?.twin_state}
-              />
+              <LatentStateViz trajectory={data?.latent_trajectory} />
             </div>
             <div className="col-span-12 lg:col-span-4">
               <AttentionHeatmap attention={data?.attention} />
             </div>
 
-            {/* Row 3: Clinical Explanation + What-If */}
-            <div className="col-span-12 lg:col-span-7">
+            {/* Row 3: Clinical Explanation (full width) */}
+            <div className="col-span-12">
               <ClinicalExplanation
                 explanation={data?.explanation}
                 riskScore={currentPatient.risk_score || 0}
@@ -254,12 +286,10 @@ export default function App() {
                 vitals={data?.vitals}
               />
             </div>
-            <div className="col-span-12 lg:col-span-5">
-              <WhatIfPanel
-                intervenableFeatures={intervenableFeatures}
-                onRunScenario={runWhatIf}
-                stayId={currentPatient.id}
-              />
+
+            {/* Row 4: BioGears What-If Physiological Intervention Simulation */}
+            <div className="col-span-12">
+              <WhatIfSimulationPanel />
             </div>
           </div>
 

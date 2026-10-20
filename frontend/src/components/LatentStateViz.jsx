@@ -37,43 +37,7 @@ function CustomTooltip({ active, payload }) {
   );
 }
 
-function StateCategoryLegend({ twinState }) {
-  const simAvailable = twinState?.simulated?.available;
-  return (
-    <div className="flex items-center gap-1.5 mb-3 text-[9px]">
-      <span
-        className="px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-400 border border-emerald-500/30"
-        title={twinState?.observed?.description}
-      >
-        OBSERVED · real vitals
-      </span>
-      <span
-        className="px-2 py-0.5 rounded-full bg-cyan-500/15 text-cyan-400 border border-cyan-500/30"
-        title={twinState?.predicted?.description}
-      >
-        PREDICTED · this chart
-      </span>
-      <span
-        className={`px-2 py-0.5 rounded-full border ${
-          simAvailable
-            ? 'bg-violet-500/15 text-violet-400 border-violet-500/30'
-            : 'bg-slate-800/60 text-slate-600 border-slate-700/50'
-        }`}
-        title={twinState?.simulated?.description}
-      >
-        SIMULATED · {simAvailable ? 'available' : 'not yet available'}
-      </span>
-      <span
-        className="px-2 py-0.5 rounded-full bg-slate-800/60 text-slate-600 border border-slate-700/50"
-        title="A real ML counterfactual (same model, re-run on a hypothetically modified input) is available on demand from the What-If panel below — it applies to a proposed scenario, not this window's actual state, so it isn't shown here."
-      >
-        COUNTERFACTUAL · see What-If panel
-      </span>
-    </div>
-  );
-}
-
-export default function LatentStateViz({ trajectory, disclaimer, twinState }) {
+export default function LatentStateViz({ trajectory }) {
   if (!trajectory?.length) {
     return (
       <motion.div
@@ -113,11 +77,9 @@ export default function LatentStateViz({ trajectory, disclaimer, twinState }) {
           Latent State Trajectory
         </h2>
         <span className="text-xs text-slate-600">
-          z_t = PREDICTED latent state (PCA 2D)
+          z_t = digital twin state (PCA 2D)
         </span>
       </div>
-
-      <StateCategoryLegend twinState={twinState} />
 
       {/* Legend */}
       <div className="flex items-center gap-4 mb-3 text-xs">
@@ -205,18 +167,10 @@ export default function LatentStateViz({ trajectory, disclaimer, twinState }) {
             {scatterData.length} timesteps tracked
           </span>
           <span className="text-slate-400 font-mono">
-            Current: z₁={scatterData[scatterData.length - 1].x.toFixed(2)},
+            Current: z₁={scatterData[scatterData.length - 1].x.toFixed(2)}, 
             z₂={scatterData[scatterData.length - 1].y.toFixed(2)}
           </span>
         </div>
-      )}
-
-      {/* Disclaimer text — comes verbatim from the backend
-          (backend/inference_service.py get_twin_state), not restated or
-          reworded here, so it stays in sync with whatever the backend
-          actually says this representation is. */}
-      {disclaimer && (
-        <p className="mt-2 text-[10px] text-slate-600 leading-relaxed">{disclaimer}</p>
       )}
     </motion.div>
   );

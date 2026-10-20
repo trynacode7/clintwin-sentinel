@@ -21,6 +21,15 @@ from backend.biogears_scenario_builder import (
     BioGearsScenario,
     BioGearsScenarioBuilderError,
     build_scenario_xml,
+    BioGearsSalineBolus,
+    BioGearsNorepinephrineInfusion,
+    BioGearsSequentialScenario,
+    build_sequential_scenario_xml,
+    VERIFIED_SALINE_VOLUMES,
+    VERIFIED_SALINE_RATE,
+    VERIFIED_NOREPINEPHRINE_CONCENTRATION,
+    VERIFIED_NOREPINEPHRINE_RATE,
+    VERIFIED_NOREPINEPHRINE_DURATION,
 )
 
 # ─── Namespaces (must match the builder's registered values) ──────────────────
@@ -474,3 +483,475 @@ class TestBuildScenarioXmlGoodPath:
     def test_xsi_type_attribute_in_output(self):
         xml_str = self._build()
         assert "SubstanceCompoundInfusionData" in xml_str
+
+
+# ─── Phase D Step A: Sequential Scenario Builder Unit Tests ───────────────────
+
+
+class TestBioGearsSalineBolus:
+    """Tests for BioGearsSalineBolus locked parameter verification."""
+
+    def test_all_supported_volumes(self):
+        for vol in (100.0, 250.0, 500.0):
+            bolus = BioGearsSalineBolus(bag_volume_ml=vol)
+            assert bolus.bag_volume_ml == vol
+            assert bolus.rate_ml_per_min == VERIFIED_SALINE_RATE
+
+    def test_duration_calculation_100ml(self):
+        bolus = BioGearsSalineBolus(bag_volume_ml=100.0)
+        # 100 mL @ 50 mL/min = 2 min = 120 s
+        assert bolus.delivery_duration_s == pytest.approx(120.0)
+        assert bolus.delivery_time_s == pytest.approx(120.0)
+
+    def test_duration_calculation_250ml(self):
+        bolus = BioGearsSalineBolus(bag_volume_ml=250.0)
+        # 250 mL @ 50 mL/min = 5 min = 300 s
+        assert bolus.delivery_duration_s == pytest.approx(300.0)
+        assert bolus.delivery_time_s == pytest.approx(300.0)
+
+    def test_duration_calculation_500ml(self):
+        bolus = BioGearsSalineBolus(bag_volume_ml=500.0)
+        # 500 mL @ 50 mL/min = 10 min = 600 s
+        assert bolus.delivery_duration_s == pytest.approx(600.0)
+        assert bolus.delivery_time_s == pytest.approx(600.0)
+
+    def test_rejection_of_unsupported_volumes(self):
+        for unsupp_vol in (50.0, 150.0, 200.0, 750.0, 1000.0, 2000.0):
+            with pytest.raises(BioGearsScenarioBuilderError, match="unverified"):
+                BioGearsSalineBolus(bag_volume_ml=unsupp_vol)
+
+    def test_rejection_of_zero_volume(self):
+        with pytest.raises(BioGearsScenarioBuilderError, match="positive number"):
+            BioGearsSalineBolus(bag_volume_ml=0.0)
+
+    def test_rejection_of_negative_volume(self):
+        with pytest.raises(BioGearsScenarioBuilderError, match="positive number"):
+            BioGearsSalineBolus(bag_volume_ml=-100.0)
+
+    def test_rejection_of_unsupported_rate(self):
+        for unsupp_rate in (0.0, 25.0, 100.0, -50.0):
+            with pytest.raises(BioGearsScenarioBuilderError, match="rate_ml_per_min"):
+                BioGearsSalineBolus(bag_volume_ml=100.0, rate_ml_per_min=unsupp_rate)
+
+    def test_rejection_of_negative_start_time(self):
+        with pytest.raises(BioGearsScenarioBuilderError, match="start_time_s"):
+            BioGearsSalineBolus(bag_volume_ml=100.0, start_time_s=-1.0)
+
+    def test_frozen_immutability(self):
+        bolus = BioGearsSalineBolus(bag_volume_ml=100.0)
+        with pytest.raises((AttributeError, TypeError)):
+            bolus.bag_volume_ml = 250.0  # type: ignore[misc]
+
+
+class TestBioGearsNorepinephrineInfusion:
+    """Tests for BioGearsNorepinephrineInfusion locked parameter verification."""
+
+    def test_locked_default_parameters(self):
+        inf = BioGearsNorepinephrineInfusion()
+        assert inf.concentration_ug_ml == VERIFIED_NOREPINEPHRINE_CONCENTRATION  # 14.0
+        assert inf.rate_ml_per_min == VERIFIED_NOREPINEPHRINE_RATE                # 1.0
+        assert inf.duration_s == VERIFIED_NOREPINEPHRINE_DURATION                # 120.0
+        assert inf.delivery_duration_s == 120.0
+        assert inf.delivery_time_s == 120.0
+
+    def test_explicit_start_time(self):
+        inf = BioGearsNorepinephrineInfusion(start_time_s=180.0)
+        assert inf.start_time_s == 180.0
+
+    def test_positional_start_time(self):
+        inf = BioGearsNorepinephrineInfusion(180.0)
+        assert inf.start_time_s == 180.0
+
+    def test_rejection_of_modified_concentration(self):
+        with pytest.raises(BioGearsScenarioBuilderError, match="concentration_ug_ml"):
+            BioGearsNorepinephrineInfusion(concentration_ug_ml=20.0)
+
+    def test_rejection_of_modified_rate(self):
+        with pytest.raises(BioGearsScenarioBuilderError, match="rate_ml_per_min"):
+            BioGearsNorepinephrineInfusion(rate_ml_per_min=2.0)
+
+    def test_rejection_of_modified_duration(self):
+        with pytest.raises(BioGearsScenarioBuilderError, match="duration_s"):
+            BioGearsNorepinephrineInfusion(duration_s=60.0)
+
+    def test_rejection_of_zero_duration(self):
+        with pytest.raises(BioGearsScenarioBuilderError, match="duration_s"):
+            BioGearsNorepinephrineInfusion(duration_s=0.0)
+
+    def test_rejection_of_negative_duration(self):
+        with pytest.raises(BioGearsScenarioBuilderError, match="duration_s"):
+            BioGearsNorepinephrineInfusion(duration_s=-120.0)
+
+    def test_rejection_of_negative_start_time(self):
+        with pytest.raises(BioGearsScenarioBuilderError, match="start_time_s"):
+            BioGearsNorepinephrineInfusion(start_time_s=-10.0)
+
+    def test_frozen_immutability(self):
+        inf = BioGearsNorepinephrineInfusion()
+        with pytest.raises((AttributeError, TypeError)):
+            inf.start_time_s = 120.0  # type: ignore[misc]
+
+
+class TestBioGearsSequentialScenarioValidation:
+    """Tests for multi-action scenario validation rules and limits."""
+
+    def test_empty_actions_rejected(self):
+        sc = BioGearsSequentialScenario(scenario_name="Empty", actions=[])
+        with pytest.raises(BioGearsScenarioBuilderError, match="at least 1 action"):
+            build_sequential_scenario_xml(sc)
+
+    def test_none_actions_rejected(self):
+        sc = BioGearsSequentialScenario(scenario_name="Empty", actions=None)
+        with pytest.raises(BioGearsScenarioBuilderError, match="at least 1 action"):
+            build_sequential_scenario_xml(sc)
+
+    def test_one_action_accepted(self):
+        sc = BioGearsSequentialScenario(
+            scenario_name="OneAction",
+            actions=[BioGearsSalineBolus(100.0, start_time_s=60.0)],
+        )
+        sc.validate()  # must not raise
+
+    def test_two_actions_accepted(self):
+        sc = BioGearsSequentialScenario(
+            scenario_name="TwoActions",
+            actions=[
+                BioGearsSalineBolus(100.0, start_time_s=60.0),   # 60s..180s
+                BioGearsSalineBolus(250.0, start_time_s=240.0),  # 240s..540s
+            ],
+        )
+        sc.validate()  # must not raise
+
+    def test_three_actions_accepted(self):
+        sc = BioGearsSequentialScenario(
+            scenario_name="ThreeActions",
+            actions=[
+                BioGearsSalineBolus(100.0, start_time_s=60.0),   # 60s..180s
+                BioGearsSalineBolus(100.0, start_time_s=200.0),  # 200s..320s
+                BioGearsSalineBolus(100.0, start_time_s=340.0),  # 340s..460s
+            ],
+        )
+        sc.validate()  # must not raise
+
+    def test_more_than_three_actions_rejected(self):
+        actions = [
+            BioGearsSalineBolus(100.0, start_time_s=60.0),
+            BioGearsSalineBolus(100.0, start_time_s=200.0),
+            BioGearsSalineBolus(100.0, start_time_s=340.0),
+            BioGearsSalineBolus(100.0, start_time_s=480.0),
+        ]
+        sc = BioGearsSequentialScenario(scenario_name="FourActions", actions=actions)
+        with pytest.raises(BioGearsScenarioBuilderError, match="maximum of 3 actions"):
+            sc.validate()
+
+    def test_unsupported_action_type_rejected(self):
+        # Phase 1 BioGearsFluidBolus is not valid in sequential scenario
+        legacy_bolus = BioGearsFluidBolus(bag_volume_ml=500.0)
+        sc = BioGearsSequentialScenario(
+            scenario_name="LegacyInSequential",
+            actions=[legacy_bolus],  # type: ignore[list-item]
+        )
+        with pytest.raises(BioGearsScenarioBuilderError, match="Unsupported action type"):
+            sc.validate()
+
+    def test_action_starting_before_baseline_stabilization_rejected(self):
+        # baseline is 60s, but action starts at 30s
+        sc = BioGearsSequentialScenario(
+            scenario_name="PreBaselineAction",
+            baseline_stabilization_s=60.0,
+            actions=[BioGearsSalineBolus(100.0, start_time_s=30.0)],
+        )
+        with pytest.raises(BioGearsScenarioBuilderError, match="precedes previous action completion or baseline"):
+            sc.validate()
+
+    def test_overlapping_actions_rejected(self):
+        # Action 0: 60s..180s (100 mL @ 50 mL/min = 120s delivery)
+        # Action 1 starts at 150s (overlap of 30s)
+        sc = BioGearsSequentialScenario(
+            scenario_name="OverlappingActions",
+            actions=[
+                BioGearsSalineBolus(100.0, start_time_s=60.0),
+                BioGearsSalineBolus(100.0, start_time_s=150.0),
+            ],
+        )
+        with pytest.raises(BioGearsScenarioBuilderError, match="strictly sequential and non-overlapping"):
+            sc.validate()
+
+    def test_zero_baseline_stabilization_rejected(self):
+        with pytest.raises(BioGearsScenarioBuilderError, match="baseline_stabilization_s"):
+            BioGearsSequentialScenario(
+                scenario_name="ZeroBaseline",
+                baseline_stabilization_s=0.0,
+                actions=[BioGearsSalineBolus(100.0, start_time_s=60.0)],
+            )
+
+    def test_negative_baseline_stabilization_rejected(self):
+        with pytest.raises(BioGearsScenarioBuilderError, match="baseline_stabilization_s"):
+            BioGearsSequentialScenario(
+                scenario_name="NegBaseline",
+                baseline_stabilization_s=-10.0,
+                actions=[BioGearsSalineBolus(100.0, start_time_s=60.0)],
+            )
+
+    def test_zero_post_observation_rejected(self):
+        with pytest.raises(BioGearsScenarioBuilderError, match="post_observation_s"):
+            BioGearsSequentialScenario(
+                scenario_name="ZeroPostObs",
+                post_observation_s=0.0,
+                actions=[BioGearsSalineBolus(100.0, start_time_s=60.0)],
+            )
+
+    def test_negative_post_observation_rejected(self):
+        with pytest.raises(BioGearsScenarioBuilderError, match="post_observation_s"):
+            BioGearsSequentialScenario(
+                scenario_name="NegPostObs",
+                post_observation_s=-30.0,
+                actions=[BioGearsSalineBolus(100.0, start_time_s=60.0)],
+            )
+
+    def test_empty_scenario_name_rejected(self):
+        with pytest.raises(BioGearsScenarioBuilderError, match="scenario_name"):
+            BioGearsSequentialScenario(
+                scenario_name="",
+                actions=[BioGearsSalineBolus(100.0, start_time_s=60.0)],
+            )
+
+    def test_empty_patient_file_rejected(self):
+        with pytest.raises(BioGearsScenarioBuilderError, match="patient_file"):
+            BioGearsSequentialScenario(
+                scenario_name="Valid",
+                patient_file="",
+                actions=[BioGearsSalineBolus(100.0, start_time_s=60.0)],
+            )
+
+    def test_simulation_duration_limit_within_1800s_accepted(self):
+        # 60s baseline + 500 mL (600s) + 500 mL (600s) + 250 mL (300s) + 60s post = 1620s <= 1800s
+        sc = BioGearsSequentialScenario(
+            scenario_name="WithinLimit",
+            baseline_stabilization_s=60.0,
+            post_observation_s=60.0,
+            actions=[
+                BioGearsSalineBolus(500.0, start_time_s=60.0),    # 60..660s
+                BioGearsSalineBolus(500.0, start_time_s=660.0),   # 660..1260s
+                BioGearsSalineBolus(250.0, start_time_s=1260.0),  # 1260..1560s
+            ],
+        )
+        assert sc.total_duration_s == 1620.0
+        sc.validate()  # must not raise
+
+    def test_simulation_duration_limit_exceeding_1800s_rejected(self):
+        # 60s baseline + 3 * 500 mL (3 * 600s = 1800s) + 60s post = 1920s > 1800s
+        sc = BioGearsSequentialScenario(
+            scenario_name="ExceedsLimit",
+            baseline_stabilization_s=60.0,
+            post_observation_s=60.0,
+            actions=[
+                BioGearsSalineBolus(500.0, start_time_s=60.0),    # 60..660s
+                BioGearsSalineBolus(500.0, start_time_s=660.0),   # 660..1260s
+                BioGearsSalineBolus(500.0, start_time_s=1260.0),  # 1260..1860s (+ 60s post = 1920s)
+            ],
+        )
+        assert sc.total_duration_s == 1920.0
+        with pytest.raises(BioGearsScenarioBuilderError, match="Maximum simulated duration is 1800s"):
+            sc.validate()
+
+    def test_mixed_intervention_flagging_and_status(self):
+        # Saline + Norepinephrine: defined in builder, but marked [BLOCKED] for execution
+        sc_mixed = BioGearsSequentialScenario(
+            scenario_name="MixedIntervention",
+            actions=[
+                BioGearsSalineBolus(100.0, start_time_s=60.0),
+                BioGearsNorepinephrineInfusion(start_time_s=240.0),
+            ],
+        )
+        assert sc_mixed.is_mixed_intervention is True
+        assert sc_mixed.execution_status == "[BLOCKED]"
+
+        # Pure Saline: unverified for sequential execution until Step B
+        sc_saline = BioGearsSequentialScenario(
+            scenario_name="PureSaline",
+            actions=[
+                BioGearsSalineBolus(100.0, start_time_s=60.0),
+                BioGearsSalineBolus(250.0, start_time_s=240.0),
+            ],
+        )
+        assert sc_saline.is_mixed_intervention is False
+        assert sc_saline.execution_status == "[UNVERIFIED]"
+
+
+class TestSequentialScenarioXmlGeneration:
+    """Tests for generated XML structure, chronological order, and advance-time segments."""
+
+    def test_single_saline_sequential_xml(self):
+        sc = BioGearsSequentialScenario(
+            scenario_name="SeqSaline100",
+            baseline_stabilization_s=60.0,
+            post_observation_s=60.0,
+            actions=[BioGearsSalineBolus(100.0, start_time_s=60.0)],
+        )
+        xml_str = build_sequential_scenario_xml(sc)
+        root = _parse(xml_str)
+
+        # Baseline advance time: 60s
+        # Action 0: Saline 100 mL @ 50 mL/min
+        # Action 0 delivery advance time: 120s
+        # Post-observation advance time: 60s
+        # Total sim time = 240s
+        assert sc.total_duration_s == 240.0
+
+        actions_el = root.find(f"{{{_NS}}}Actions")
+        actions = list(actions_el)
+        assert len(actions) == 4
+
+        # 1. Baseline AdvanceTimeData (60s)
+        assert actions[0].get(f"{{{_XSI}}}type") == "AdvanceTimeData"
+        assert actions[0].find(f"{{{_NS}}}Time").get("value") == "60"
+
+        # 2. Saline SubstanceCompoundInfusionData (100 mL @ 50 mL/min)
+        assert actions[1].get(f"{{{_XSI}}}type") == "SubstanceCompoundInfusionData"
+        assert actions[1].find(f"{{{_NS}}}SubstanceCompound").text == "Saline"
+        assert actions[1].find(f"{{{_NS}}}BagVolume").get("value") == "100"
+        assert actions[1].find(f"{{{_NS}}}Rate").get("value") == "50"
+
+        # 3. Delivery AdvanceTimeData (120s)
+        assert actions[2].get(f"{{{_XSI}}}type") == "AdvanceTimeData"
+        assert actions[2].find(f"{{{_NS}}}Time").get("value") == "120"
+
+        # 4. Post-observation AdvanceTimeData (60s)
+        assert actions[3].get(f"{{{_XSI}}}type") == "AdvanceTimeData"
+        assert actions[3].find(f"{{{_NS}}}Time").get("value") == "60"
+
+    def test_single_norepinephrine_sequential_xml(self):
+        sc = BioGearsSequentialScenario(
+            scenario_name="SeqNorepi",
+            baseline_stabilization_s=60.0,
+            post_observation_s=60.0,
+            actions=[BioGearsNorepinephrineInfusion(start_time_s=60.0)],
+        )
+        xml_str = build_sequential_scenario_xml(sc)
+        root = _parse(xml_str)
+
+        actions_el = root.find(f"{{{_NS}}}Actions")
+        actions = list(actions_el)
+        assert len(actions) == 5
+
+        # 1. Baseline AdvanceTimeData (60s)
+        assert actions[0].get(f"{{{_XSI}}}type") == "AdvanceTimeData"
+        assert actions[0].find(f"{{{_NS}}}Time").get("value") == "60"
+
+        # 2. Norepinephrine SubstanceInfusionData (14 ug/mL @ 1.0 mL/min)
+        assert actions[1].get(f"{{{_XSI}}}type") == "SubstanceInfusionData"
+        assert actions[1].find(f"{{{_NS}}}Substance").text == "Norepinephrine"
+        assert actions[1].find(f"{{{_NS}}}Concentration").get("value") == "14"
+        assert actions[1].find(f"{{{_NS}}}Rate").get("value") == "1"
+
+        # 3. Infusion duration AdvanceTimeData (120s)
+        assert actions[2].get(f"{{{_XSI}}}type") == "AdvanceTimeData"
+        assert actions[2].find(f"{{{_NS}}}Time").get("value") == "120"
+
+        # 4. Stop infusion (rate=0, conc=0)
+        assert actions[3].get(f"{{{_XSI}}}type") == "SubstanceInfusionData"
+        assert actions[3].find(f"{{{_NS}}}Rate").get("value") == "0"
+        assert actions[3].find(f"{{{_NS}}}Concentration").get("value") == "0"
+
+        # 5. Post-observation AdvanceTimeData (60s)
+        assert actions[4].get(f"{{{_XSI}}}type") == "AdvanceTimeData"
+        assert actions[4].find(f"{{{_NS}}}Time").get("value") == "60"
+
+    def test_multi_action_with_advance_time_gap(self):
+        # Baseline: 60s
+        # Action 0: Saline 100 mL, starts 60s, delivers in 120s (ends 180s)
+        # Advance gap: 60s (action 1 starts at 240s)
+        # Action 1: Saline 250 mL, starts 240s, delivers in 300s (ends 540s)
+        # Post-observation: 60s (ends 600s)
+        sc = BioGearsSequentialScenario(
+            scenario_name="TwoBolusesWithGap",
+            baseline_stabilization_s=60.0,
+            post_observation_s=60.0,
+            actions=[
+                BioGearsSalineBolus(100.0, start_time_s=60.0),
+                BioGearsSalineBolus(250.0, start_time_s=240.0),
+            ],
+        )
+        assert sc.total_duration_s == 600.0
+
+        xml_str = build_sequential_scenario_xml(sc)
+        root = _parse(xml_str)
+        actions = list(root.find(f"{{{_NS}}}Actions"))
+
+        # Expected sequence:
+        # 0: AdvanceTime (60s) - Baseline
+        # 1: Saline 100 mL
+        # 2: AdvanceTime (120s) - Action 0 delivery
+        # 3: AdvanceTime (60s) - Gap between Action 0 and Action 1
+        # 4: Saline 250 mL
+        # 5: AdvanceTime (300s) - Action 1 delivery
+        # 6: AdvanceTime (60s) - Post-observation
+        assert len(actions) == 7
+
+        assert actions[0].find(f"{{{_NS}}}Time").get("value") == "60"
+        assert actions[1].find(f"{{{_NS}}}BagVolume").get("value") == "100"
+        assert actions[2].find(f"{{{_NS}}}Time").get("value") == "120"
+        assert actions[3].find(f"{{{_NS}}}Time").get("value") == "60"
+        assert actions[4].find(f"{{{_NS}}}BagVolume").get("value") == "250"
+        assert actions[5].find(f"{{{_NS}}}Time").get("value") == "300"
+        assert actions[6].find(f"{{{_NS}}}Time").get("value") == "60"
+
+        # Verify sum of all advance times equals total_duration_s
+        advance_times = [
+            float(a.find(f"{{{_NS}}}Time").get("value"))
+            for a in actions
+            if a.get(f"{{{_XSI}}}type") == "AdvanceTimeData"
+        ]
+        assert sum(advance_times) == pytest.approx(600.0)
+
+    def test_timeline_milestones_structure(self):
+        sc = BioGearsSequentialScenario(
+            scenario_name="MilestoneTest",
+            baseline_stabilization_s=60.0,
+            post_observation_s=60.0,
+            actions=[
+                BioGearsSalineBolus(100.0, start_time_s=60.0),
+                BioGearsNorepinephrineInfusion(start_time_s=240.0),
+            ],
+        )
+        milestones = sc.get_timeline_milestones()
+        assert len(milestones) == 5
+
+        # Milestone 0: baseline (0..60s)
+        assert milestones[0]["phase"] == "baseline"
+        assert milestones[0]["start_s"] == 0.0
+        assert milestones[0]["end_s"] == 60.0
+
+        # Milestone 1: saline intervention (60..180s)
+        assert milestones[1]["phase"] == "intervention_0"
+        assert milestones[1]["start_s"] == 60.0
+        assert milestones[1]["end_s"] == 180.0
+        assert milestones[1]["action_type"] == "saline"
+
+        # Milestone 2: intermediate hold (180..240s)
+        assert milestones[2]["start_s"] == 180.0
+        assert milestones[2]["end_s"] == 240.0
+        assert milestones[2]["duration_s"] == 60.0
+
+        # Milestone 3: norepi intervention (240..360s)
+        assert milestones[3]["phase"] == "intervention_1"
+        assert milestones[3]["start_s"] == 240.0
+        assert milestones[3]["end_s"] == 360.0
+        assert milestones[3]["action_type"] == "norepinephrine"
+
+        # Milestone 4: post-intervention observation (360..420s)
+        assert milestones[4]["phase"] == "post_observation"
+        assert milestones[4]["start_s"] == 360.0
+        assert milestones[4]["end_s"] == 420.0
+        assert milestones[4]["duration_s"] == 60.0
+
+    def test_build_scenario_xml_dispatches_sequential_scenario(self):
+        sc = BioGearsSequentialScenario(
+            scenario_name="DispatchTest",
+            actions=[BioGearsSalineBolus(100.0, start_time_s=60.0)],
+        )
+        xml_via_main = build_scenario_xml(sc)
+        xml_via_seq = build_sequential_scenario_xml(sc)
+        assert xml_via_main == xml_via_seq
+

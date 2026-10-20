@@ -1,3 +1,4 @@
+import torch
 """
 preprocessing.py — ICU Data Preprocessing Pipeline
 ====================================================
@@ -106,6 +107,8 @@ def add_missingness_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     
     for col in config.ALL_FEATURE_COLS:
+        if col not in df.columns:
+            df[col] = np.nan
         # Binary missingness indicator
         df[f"{col}_missing"] = df[col].isna().astype(float)
         
@@ -446,6 +449,118 @@ def scale_splits(
     logger.info(f"Scaling complete. {len(feature_cols)} columns normalized on train-fit statistics.")
 
     return out
+
+
+
+def prepare_inference_sequence(
+    raw_records: List[Dict],
+    scaler: StandardScaler,
+    feature_cols: List[str],
+    window_size: int = config.INPUT_WINDOW,
+) -> Tuple[torch.Tensor, torch.Tensor, pd.DataFrame]:
+    """
+    Transform raw patient time-series data for inference using the training pipeline.
+    
+    Pipeline:
+      raw records (dicts)
+      → DataFrame formatting & ID/time alignment
+      → 5-minute resampling (resample_stay)
+      → LOCF / interpolation
+      → missingness indicators & time-since-obs (add_missingness_indicators)
+      → standardization with fitted scaler (apply_scaler)
+      → feature engineering (engineer_features)
+      → exact feature_cols ordering
+      → window padding/truncation (INPUT_WINDOW timesteps)
+      
+    Args:
+        raw_records: List of dictionaries representing patient timesteps
+        scaler: Pre-fitted StandardScaler (trained on config.ALL_FEATURE_COLS)
+        feature_cols: Required feature columns in exact checkpoint order
+        window_size: Length of input window (default config.INPUT_WINDOW = 72)
+        
+    Returns:
+        X: Tensor of shape [1, window_size, len(feature_cols)]
+        mask: Tensor of shape [1, window_size] (1 for valid timesteps, 0 for padded)
+        engineered_df: Preprocessed and engineered DataFrame
+    """
+    from backend.feature_engineering import engineer_features
+
+    if not raw_records:
+        raise ValueError("raw_records must be a non-empty list of dictionaries.")
+
+    df = pd.DataFrame(raw_records)
+
+    # 1. Ensure ID columns exist
+    for col in config.ID_COLS:
+        if col not in df.columns or df[col].isna().all():
+            df[col] = 1
+
+    # 2. Ensure charttime exists and is datetime
+    if config.TIME_COL in df.columns and df[config.TIME_COL].notna().any():
+        df[config.TIME_COL] = pd.to_datetime(df[config.TIME_COL], errors="coerce")
+    
+    if config.TIME_COL not in df.columns or df[config.TIME_COL].isna().all():
+        # Generate 5-min intervals ending at current time
+        base_time = pd.Timestamp("2026-01-01 00:00:00")
+        df[config.TIME_COL] = [base_time + pd.Timedelta(minutes=5 * i) for i in range(len(df))]
+    elif df[config.TIME_COL].isna().any():
+        df[config.TIME_COL] = df[config.TIME_COL].ffill().bfill()
+
+    df = df.sort_values([*config.ID_COLS, config.TIME_COL]).reset_index(drop=True)
+
+    # 3. Ensure all raw measurement columns exist and are numeric
+    for col in config.ALL_FEATURE_COLS:
+        if col not in df.columns:
+            df[col] = np.nan
+        else:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    # 4. Resample stay (resample_stay expects at least 2 points)
+    if len(df) < 2:
+        df2 = df.copy()
+        extra_row = df.iloc[-1].copy()
+        extra_row[config.TIME_COL] = extra_row[config.TIME_COL] + pd.Timedelta(minutes=5)
+        df2 = pd.concat([df2, pd.DataFrame([extra_row])], ignore_index=True)
+        resampled = resample_stay(df2, freq=config.RESAMPLE_FREQ)
+    else:
+        resampled = resample_stay(df, freq=config.RESAMPLE_FREQ)
+
+    # 5. Missingness indicators
+    with_indicators = add_missingness_indicators(resampled)
+
+    # 6. Apply standardization scaler (only on raw measurement features)
+    scaled = apply_scaler(with_indicators, scaler, config.ALL_FEATURE_COLS)
+
+    # 7. Apply feature engineering
+    engineered = engineer_features(scaled)
+
+    # 8. Align with exact feature columns
+    for col in feature_cols:
+        if col not in engineered.columns:
+            engineered[col] = 0.0
+
+    features = engineered[feature_cols].values.astype(np.float32)
+
+    # 9. Windowing / padding
+    n_steps = len(features)
+    if n_steps < window_size:
+        pad_len = window_size - n_steps
+        X = np.zeros((1, window_size, len(feature_cols)), dtype=np.float32)
+        X[0, pad_len:] = features
+        mask = np.zeros((1, window_size), dtype=np.float32)
+        mask[0, pad_len:] = 1.0
+    else:
+        X = np.zeros((1, window_size, len(feature_cols)), dtype=np.float32)
+        X[0] = features[-window_size:]
+        mask = np.ones((1, window_size), dtype=np.float32)
+
+    X = np.nan_to_num(X, nan=0.0)
+
+    X_tensor = torch.tensor(X, dtype=torch.float32)
+    mask_tensor = torch.tensor(mask, dtype=torch.float32)
+
+    return X_tensor, mask_tensor, engineered
+
 
 
 if __name__ == "__main__":

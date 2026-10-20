@@ -126,7 +126,8 @@ def _liver_subscore(bilirubin: pd.Series) -> pd.Series:
 def _cardiovascular_subscore(map_: pd.Series, vasopressor_dose: pd.Series) -> pd.Series:
     dose = vasopressor_dose.fillna(0)
     score = pd.Series(0, index=map_.index, dtype=float)
-    score.loc[map_ < config.SOFA_CARDIOVASCULAR_MAP_THRESHOLD] = 1
+    map_thresh = getattr(config, "SOFA_CARDIOVASCULAR_MAP_THRESHOLD", 70.0)
+    score.loc[map_ < map_thresh] = 1
     score.loc[(dose > 0) & (dose <= 0.1)] = 3
     score.loc[dose > 0.1] = 4
     score.loc[map_.isna() & vasopressor_dose.isna()] = np.nan
@@ -227,7 +228,8 @@ def create_labels_for_stay(stay_data: pd.DataFrame) -> pd.DataFrame:
         if np.isnan(baseline_sofa[i]) or np.isnan(future_max_sofa[i]):
             continue
 
-        deteriorated = (future_max_sofa[i] - baseline_sofa[i]) >= config.SOFA_INCREASE_THRESHOLD
+        sofa_inc = getattr(config, "SOFA_INCREASE_THRESHOLD", 2)
+        deteriorated = (future_max_sofa[i] - baseline_sofa[i]) >= sofa_inc
         labels[i] = float(eligible and deteriorated)
 
     stay_data["baseline_sofa"] = baseline_sofa

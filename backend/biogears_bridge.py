@@ -230,6 +230,7 @@ class BioGearsResult:
     row_count: int
     time_range_s: Tuple[float, float]       # (first_time_s, last_time_s)
     returncode: int                         # Always 0 when this object exists
+    output_csv_path: Optional[str] = None
 
 
 # ─── Configuration ────────────────────────────────────────────────────────────
@@ -286,6 +287,11 @@ class BioGearsBridge:
     def config(self) -> BioGearsConfig:
         """The configuration this bridge instance was created with."""
         return self._config
+
+    @property
+    def is_available(self) -> bool:
+        """True if the BioGears executable exists and is a file."""
+        return os.path.isfile(self._config.executable)
 
     # ─── Primary public method ────────────────────────────────────────────
 
@@ -649,6 +655,7 @@ class BioGearsBridge:
             row_count=row_count,
             time_range_s=(time_s[0], time_s[-1]),
             returncode=returncode,
+            output_csv_path=csv_path,
         )
 
     @staticmethod

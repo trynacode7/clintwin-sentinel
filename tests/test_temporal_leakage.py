@@ -85,7 +85,7 @@ def test_label_does_not_use_row_immediately_after_input_window():
     input window's last row (k = i+1) must NOT trigger label[i]=1, since
     FUTURE_WINDOW_START=2 excludes T+1 from the eligible future window.
     """
-    n = 10
+    n = 100
     i = 3
     k = i + 1
     df = _inject_severe_event(_baseline_stay(n), k)
@@ -104,8 +104,8 @@ def test_dataset_input_window_never_reflects_future_rows():
     i.e. the model's input at time T is provably independent of data at T+1
     and beyond.
     """
-    n = 20
-    cutoff = 10
+    n = 120
+    cutoff = 85
     window_size = config.INPUT_WINDOW
     feature_cols = list(config.ALL_FEATURE_COLS)
 

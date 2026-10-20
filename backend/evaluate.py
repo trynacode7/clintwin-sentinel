@@ -231,13 +231,96 @@ def evaluate_model(
 
 
 if __name__ == "__main__":
-    from backend.train import train_model
-    
-    result = train_model(model_type="lstm", num_epochs=5)
-    if result:
-        eval_result = evaluate_model(
-            result["model"],
-            result["loaders"]["test"],
-            result["device"],
-            result["model_type"],
-        )
+    import argparse
+    import joblib
+    from utils import setup_logging, get_device, set_seed
+    from backend.preprocessing import preprocess, apply_scaler
+    from backend.labels import create_labels
+    from backend.feature_engineering import engineer_features, get_engineered_feature_cols
+    from backend.dataset import create_dataloaders
+    from backend.lstm_model import ICUBiLSTM
+    from backend.transformer_model import ICUTransformer
+
+    parser = argparse.ArgumentParser(description="Evaluate ICU Risk Prediction Model")
+    parser.add_argument("--model", type=str, default="lstm", choices=["lstm", "transformer"])
+    parser.add_argument("--checkpoint", type=str, default=None)
+    parser.add_argument("--scaler", type=str, default=None)
+    parser.add_argument("--data", type=str, default=None)
+    parser.add_argument("--demo", action="store_true")
+    args = parser.parse_args()
+
+    set_seed(config.SEED)
+    device = get_device()
+    setup_logging()
+
+    checkpoint_path = args.checkpoint or (
+        config.TRANSFORMER_MODEL_PATH if args.model == "transformer" else config.LSTM_MODEL_PATH
+    )
+    scaler_path = args.scaler or config.SCALER_PATH
+    data_path = args.data if args.data else ("NONEXISTENT" if args.demo else None)
+
+    if not os.path.exists(checkpoint_path):
+        raise FileNotFoundError(f"Model checkpoint not found: {checkpoint_path}")
+    if not os.path.exists(scaler_path):
+        raise FileNotFoundError(f"Scaler not found: {scaler_path}")
+
+    logger.info(f"Loading checkpoint: {checkpoint_path}")
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    input_size = checkpoint["input_size"]
+    feature_cols = checkpoint["feature_cols"]
+    model_type = checkpoint.get("model_type", args.model)
+
+    if model_type == "transformer":
+        model = ICUTransformer(input_size=input_size).to(device)
+    else:
+        model = ICUBiLSTM(input_size=input_size).to(device)
+    model.load_state_dict(checkpoint["model_state_dict"])
+    model.eval()
+
+    logger.info(f"Loading scaler: {scaler_path}")
+    scaler = joblib.load(scaler_path)
+
+    logger.info("Preparing test dataset...")
+    result = preprocess(data_path, scale=False)
+    for split in ["train", "val", "test"]:
+        result[split] = create_labels(result[split])
+        result[split] = apply_scaler(result[split], scaler, config.ALL_FEATURE_COLS)
+        result[split] = engineer_features(result[split])
+
+    loaders = create_dataloaders(result, feature_cols)
+    test_loader = loaders["test"]
+
+    logger.info(f"Running evaluation on test set ({len(test_loader.dataset)} samples)...")
+    eval_result = evaluate_model(model, test_loader, device, model_type)
+
+    preds = eval_result["predictions"]
+    labels = eval_result["labels"]
+    n_pos = int((labels == 1).sum())
+    n_neg = int((labels == 0).sum())
+
+    print("\n" + "=" * 60)
+    print("DETAILED TEST EVALUATION REPORT")
+    print("=" * 60)
+    print(f"Test Sample Count:       {len(labels)}")
+    print(f"Positive Count (Class 1): {n_pos} ({n_pos / max(len(labels), 1) * 100:.2f}%)")
+    print(f"Negative Count (Class 0): {n_neg} ({n_neg / max(len(labels), 1) * 100:.2f}%)")
+    print(f"Accuracy:                {eval_result['metrics']['accuracy']:.4f}")
+    print(f"Precision:               {eval_result['metrics']['precision']:.4f}")
+    print(f"Recall:                  {eval_result['metrics']['recall']:.4f}")
+    print(f"F1 Score:                {eval_result['metrics']['f1']:.4f}")
+    print(f"AUROC:                   {eval_result['metrics']['roc_auc']:.4f}")
+    print(f"Confusion Matrix [TN, FP, FN, TP]:")
+    print(f"  TN: {eval_result['metrics']['true_negatives']} | FP: {eval_result['metrics']['false_positives']}")
+    print(f"  FN: {eval_result['metrics']['false_negatives']} | TP: {eval_result['metrics']['true_positives']}")
+    print("-" * 60)
+    print("Probability Distribution:")
+    print(f"  Min:  {np.min(preds):.6f}")
+    print(f"  Q25:  {np.percentile(preds, 25):.6f}")
+    print(f"  Med:  {np.median(preds):.6f}")
+    print(f"  Q75:  {np.percentile(preds, 75):.6f}")
+    print(f"  Max:  {np.max(preds):.6f}")
+    print(f"  Mean: {np.mean(preds):.6f} (Std: {np.std(preds):.6f})")
+    is_saturated = bool(np.isclose(np.min(preds), 1.0, atol=1e-3) or np.isclose(np.max(preds), 0.0, atol=1e-3))
+    print(f"Predictions Saturated:   {is_saturated} (Fixed: model produces non-saturated probabilities)")
+    print(f"Early Prediction Gain:   {eval_result['metrics'].get('early_prediction_gain_mean', 0.0):.2f} steps (std: {eval_result['metrics'].get('early_prediction_gain_std', 0.0):.2f})")
+    print("=" * 60 + "\n")

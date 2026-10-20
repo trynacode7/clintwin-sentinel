@@ -20,6 +20,7 @@ from typing import Optional, List, Tuple
 import joblib
 import numpy as np
 import pandas as pd
+import torch
 
 import config
 from backend.preprocessing import (
@@ -32,6 +33,7 @@ logger = logging.getLogger("icu_digital_twin")
 BIOGEARS_COLUMNS = {
     "Time(s)": "time_seconds",
     "HeartRate(1/min)": "heart_rate",
+    "BloodVolume(L)": "blood_volume",
     "MeanArterialPressure(mmHg)": "map",
     "SystolicArterialPressure(mmHg)": "systolic_bp",
     "DiastolicArterialPressure(mmHg)": "diastolic_bp",
@@ -130,6 +132,13 @@ class BioGearsFeatureTransformer:
         feature_cols: Optional[List[str]] = None,
     ):
         self.scaler_path = Path(scaler_path)
+        model_path = getattr(config, "BIOGEARS_LSTM_MODEL_PATH", config.LSTM_MODEL_PATH)
+        if feature_cols is None and os.path.exists(model_path):
+            try:
+                ckpt = torch.load(model_path, map_location="cpu", weights_only=False)
+                feature_cols = ckpt.get("feature_cols", None)
+            except Exception:
+                pass
         self.feature_cols = feature_cols
 
     def load_and_standardize_csv(
@@ -152,7 +161,6 @@ class BioGearsFeatureTransformer:
             "MeanArterialPressure(mmHg)",
             "RespirationRate(1/min)",
             "OxygenSaturation",
-            "CoreTemperature(degC)",
         ]
         missing = [col for col in required if col not in df.columns]
         if missing:
@@ -161,6 +169,9 @@ class BioGearsFeatureTransformer:
         # Rename to ClinTwin internal schema
         rename_dict = {k: v for k, v in BIOGEARS_COLUMNS.items() if k in df.columns}
         df = df.rename(columns=rename_dict)
+
+        if "temp" not in df.columns:
+            df["temp"] = 37.0
 
         # Mandatory SpO2 unit scaling: BioGears outputs fraction 0.979 -> scale to 97.9%
         if "spo2" in df.columns and df["spo2"].max() <= 1.0:

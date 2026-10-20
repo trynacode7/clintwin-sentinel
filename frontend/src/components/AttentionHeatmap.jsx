@@ -49,12 +49,8 @@ export default function AttentionHeatmap({ attention }) {
 
   if (!matrix?.length) {
     return (
-      <motion.div className="glass-panel p-5 flex flex-col items-center justify-center h-full text-center gap-1">
-        <p className="text-sm text-slate-500">Not applicable for this model</p>
-        <p className="text-xs text-slate-600 max-w-[220px]">
-          The active model is a BiLSTM, which has no self-attention mechanism —
-          this panel needs the Transformer model to show real attention weights.
-        </p>
+      <motion.div className="glass-panel p-5 flex items-center justify-center h-full">
+        <p className="text-sm text-slate-500">No attention data available</p>
       </motion.div>
     );
   }

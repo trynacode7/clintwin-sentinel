@@ -27,6 +27,11 @@ CSV_PATH = os.path.join(
     "stable_6hour_results.csvResults.csv",
 )
 
+pytestmark = pytest.mark.skipif(
+    not os.path.exists(CSV_PATH),
+    reason="Requires generated BioGears CSV stable_6hour_results.csvResults.csv",
+)
+
 
 @pytest.fixture
 def checkpoint_feature_cols():

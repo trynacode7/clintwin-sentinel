@@ -23,6 +23,11 @@ CSV_PATH = os.path.join(
     "stable_6hour_results.csvResults.csv",
 )
 
+pytestmark = pytest.mark.skipif(
+    not os.path.exists(CSV_PATH),
+    reason="Requires generated BioGears CSV stable_6hour_results.csvResults.csv",
+)
+
 
 @pytest.mark.anyio
 async def test_async_job_manager_lifecycle():

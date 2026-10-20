@@ -31,11 +31,9 @@ from typing import Dict, Optional
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import config
 from utils import setup_logging, set_seed, get_device, compute_class_weights
-from backend.preprocessing import preprocess, scale_splits
+from backend.preprocessing import preprocess
 from backend.feature_engineering import engineer_features, get_engineered_feature_cols
-from backend.labels_sofa import create_labels  # Phase 1: SOFA/Sepsis-3-consistent label
-                                                 # (labels.py's original ad hoc threshold rule
-                                                 # is preserved, unmodified, and unused by default)
+from backend.labels import create_labels
 from backend.dataset import create_dataloaders, get_all_labels
 from backend.lstm_model import ICUBiLSTM
 from backend.transformer_model import ICUTransformer
@@ -59,7 +57,7 @@ def train_epoch(
         Dictionary with 'loss' and 'accuracy' metrics.
     """
     model.train()
-    total_loss = 0
+    total_loss = 0.0
     correct = 0
     total = 0
     
@@ -77,8 +75,6 @@ def train_epoch(
             risk, z_t = model(X, mask)
         
         risk = risk.squeeze(-1)  # [batch]
-        
-        # Compute loss
         loss = criterion(risk, y)
         
         # Backward pass
@@ -113,10 +109,10 @@ def validate(
     Validate the model.
     
     Returns:
-        Dictionary with 'loss', 'accuracy', and 'predictions'.
+        Dictionary with 'loss', 'accuracy', 'auroc', 'f1', and 'predictions'.
     """
     model.eval()
-    total_loss = 0
+    total_loss = 0.0
     correct = 0
     total = 0
     all_preds = []
@@ -143,11 +139,39 @@ def validate(
         all_preds.extend(risk.cpu().numpy())
         all_labels.extend(y.cpu().numpy())
     
+    if total == 0:
+        logger.warning("Validation set has 0 samples! Returning infinite loss.")
+        return {
+            "loss": float("inf"),
+            "accuracy": 0.0,
+            "auroc": float("nan"),
+            "f1": float("nan"),
+            "predictions": np.array([]),
+            "labels": np.array([]),
+        }
+    
+    val_loss = total_loss / total
+    val_acc = correct / total
+    
+    from sklearn.metrics import roc_auc_score, f1_score
+    y_true = np.array(all_labels)
+    y_scores = np.array(all_preds)
+    preds_binary = (y_scores > 0.5).astype(int)
+    
+    if len(np.unique(y_true)) > 1:
+        auroc = float(roc_auc_score(y_true, y_scores))
+        f1 = float(f1_score(y_true, preds_binary, zero_division=0))
+    else:
+        auroc = float("nan")
+        f1 = float("nan")
+    
     return {
-        "loss": total_loss / max(total, 1),
-        "accuracy": correct / max(total, 1),
-        "predictions": np.array(all_preds),
-        "labels": np.array(all_labels),
+        "loss": val_loss,
+        "accuracy": val_acc,
+        "auroc": auroc,
+        "f1": f1,
+        "predictions": y_scores,
+        "labels": y_true,
     }
 
 
@@ -210,29 +234,29 @@ def train_model(
     logger.info(f"Training {model_type.upper()} model")
     logger.info("=" * 60)
     
-    # Step 1: Preprocess (RAW clinical units — no scaling yet)
-    logger.info("Step 1/6: Preprocessing...")
-    result = preprocess(data_path)
-
-    # Step 2: Feature Engineering (on RAW values — deltas/rolling/shock_index
-    # must be computed in real clinical units)
-    logger.info("Step 2/6: Feature engineering...")
-    for split in ["train", "val", "test"]:
-        result[split] = engineer_features(result[split])
-
-    # Step 3: Create Labels (SOFA subscores need RAW clinical units — must
-    # run BEFORE scaling; see preprocessing.preprocess()'s docstring)
-    logger.info("Step 3/6: Creating labels...")
+    # Step 1: Preprocess raw data (without scaling)
+    logger.info("Step 1/6: Preprocessing (unscaled vitals & labs)...")
+    from backend.preprocessing import fit_scaler, apply_scaler
+    result = preprocess(data_path, scale=False)
+    
+    # Step 2: Create future-window labels on unscaled raw measurements
+    logger.info("Step 2/6: Creating future-window labels on raw physiological measurements...")
     for split in ["train", "val", "test"]:
         result[split] = create_labels(result[split])
-
-    # Step 3b: Scale (Z-score normalize) the raw measurement columns —
-    # ONLY now, after engineering and labeling are done with real units.
-    logger.info("Step 3b/6: Scaling...")
-    result = scale_splits(result)
-
-    # Step 4: Create DataLoaders
-    logger.info("Step 4/6: Creating DataLoaders...")
+    
+    # Step 3: Fit scaler on training split ONLY and normalize raw measurement columns
+    logger.info("Step 3/6: Fitting scaler on training data...")
+    scaler = fit_scaler(result["train"], config.ALL_FEATURE_COLS)
+    for split in ["train", "val", "test"]:
+        result[split] = apply_scaler(result[split], scaler, config.ALL_FEATURE_COLS)
+    
+    # Step 4: Feature engineering (deltas, rolling stats, shock index, time features)
+    logger.info("Step 4/6: Feature engineering...")
+    for split in ["train", "val", "test"]:
+        result[split] = engineer_features(result[split])
+    
+    # Step 5: Create DataLoaders
+    logger.info("Step 5/6: Creating DataLoaders...")
     feature_cols = get_engineered_feature_cols(result["train"])
     loaders = create_dataloaders(result, feature_cols)
     
@@ -241,10 +265,24 @@ def train_model(
         return None
     
     input_size = len(feature_cols)
-    logger.info(f"Input features: {input_size}")
+    logger.info(f"Input features: {input_size} (matching checkpoint requirement: 46)")
+    
+    # Class statistics & validation batch reporting
+    train_labels = get_all_labels(loaders["train"])
+    val_labels = get_all_labels(loaders["val"]) if "val" in loaders and len(loaders["val"]) > 0 else np.array([])
+    
+    n_train_pos = int((train_labels == 1).sum())
+    n_train_neg = int((train_labels == 0).sum())
+    n_val_pos = int((val_labels == 1).sum()) if len(val_labels) > 0 else 0
+    n_val_neg = int((val_labels == 0).sum()) if len(val_labels) > 0 else 0
+    val_batches = len(loaders["val"]) if "val" in loaders else 0
+    
+    logger.info(f"Train samples: {len(train_labels)} | Pos: {n_train_pos} | Neg: {n_train_neg} | Pos ratio: {n_train_pos / max(len(train_labels), 1):.3f}")
+    logger.info(f"Val samples:   {len(val_labels)} | Pos: {n_val_pos} | Neg: {n_val_neg} | Pos ratio: {n_val_pos / max(len(val_labels), 1):.3f}")
+    logger.info(f"Validation batches: {val_batches}")
     
     # ─── Model Setup ─────────────────────────────────────────────────
-    logger.info("Step 5/6: Initializing model...")
+    logger.info("Step 6/6: Initializing model & training loop...")
     
     if model_type == "transformer":
         model = ICUTransformer(input_size=input_size).to(device)
@@ -256,43 +294,34 @@ def train_model(
     n_params = sum(p.numel() for p in model.parameters())
     logger.info(f"Model parameters: {n_params:,}")
     
-    # Class weighting for imbalanced labels
-    train_labels = get_all_labels(loaders["train"])
-    class_weights = compute_class_weights(train_labels)
-    pos_weight = torch.tensor([class_weights[1] / class_weights[0]]).to(device)
-    
-    criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
-    # Note: Since our model already applies sigmoid, we use BCELoss instead
-    criterion = nn.BCELoss(weight=None)
-    # Actually, let's use a custom approach: weighted BCE
-    pos_w = class_weights[1].item()
+    # Class weighting for balanced binary cross-entropy
+    class_weights = compute_class_weights(train_labels).to(device)
+    pos_w = class_weights[1]
+    neg_w = class_weights[0]
+    logger.info(f"Class weights: neg={neg_w.item():.4f}, pos={pos_w.item():.4f}")
     
     def weighted_bce(pred, target):
-        """BCE with class weighting to handle label imbalance."""
-        weights = torch.where(target == 1, pos_w, 1.0)
-        bce = nn.functional.binary_cross_entropy(pred, target, reduction="none")
+        """BCE with symmetric inverse-frequency class weighting and numerical clamping."""
+        weights = torch.where(target == 1, pos_w, neg_w)
+        bce = nn.functional.binary_cross_entropy(
+            pred.clamp(1e-6, 1.0 - 1e-6), target, reduction="none"
+        )
         return (bce * weights).mean()
     
     criterion = weighted_bce
     
-    optimizer = Adam(model.parameters(), lr=config.LEARNING_RATE)
+    optimizer = Adam(model.parameters(), lr=config.LEARNING_RATE, weight_decay=1e-5)
     scheduler = ReduceLROnPlateau(
         optimizer,
         mode="min",
         patience=config.LR_SCHEDULER_PATIENCE,
         factor=config.LR_SCHEDULER_FACTOR,
-        # Phase 1 bugfix: `verbose` was removed from ReduceLROnPlateau in the
-        # installed torch version (2.13) — pre-existing incompatibility
-        # surfaced only by actually running training, not by this phase's
-        # data-layer changes. LR changes are still visible via the per-epoch
-        # `LR:` field already logged below.
     )
     early_stopping = EarlyStopping(patience=config.EARLY_STOPPING_PATIENCE)
     
     # ─── Training Loop ───────────────────────────────────────────────
-    logger.info("Step 6/6: Training...")
     best_val_loss = float("inf")
-    history = {"train_loss": [], "val_loss": [], "train_acc": [], "val_acc": []}
+    history = {"train_loss": [], "val_loss": [], "train_acc": [], "val_acc": [], "val_auroc": [], "val_f1": []}
     
     for epoch in range(1, num_epochs + 1):
         t0 = time.time()
@@ -308,14 +337,18 @@ def train_model(
         )
         
         # Update scheduler
-        scheduler.step(val_metrics["loss"])
+        if not np.isinf(val_metrics["loss"]) and not np.isnan(val_metrics["loss"]):
+            scheduler.step(val_metrics["loss"])
         
-        # Log
         elapsed = time.time() - t0
+        auc_str = f"AUROC: {val_metrics['auroc']:.4f}" if not np.isnan(val_metrics['auroc']) else "AUROC: N/A"
+        f1_str = f"F1: {val_metrics['f1']:.4f}" if not np.isnan(val_metrics['f1']) else "F1: N/A"
+        
         logger.info(
             f"Epoch {epoch:3d}/{num_epochs} | "
             f"Train Loss: {train_metrics['loss']:.4f} Acc: {train_metrics['accuracy']:.4f} | "
             f"Val Loss: {val_metrics['loss']:.4f} Acc: {val_metrics['accuracy']:.4f} | "
+            f"{auc_str} | {f1_str} | "
             f"LR: {optimizer.param_groups[0]['lr']:.6f} | "
             f"{elapsed:.1f}s"
         )
@@ -324,9 +357,16 @@ def train_model(
         history["val_loss"].append(val_metrics["loss"])
         history["train_acc"].append(train_metrics["accuracy"])
         history["val_acc"].append(val_metrics["accuracy"])
+        history["val_auroc"].append(val_metrics["auroc"])
+        history["val_f1"].append(val_metrics["f1"])
         
-        # Save best model
-        if val_metrics["loss"] < best_val_loss:
+        # Save best model (requires valid positive loss > 1e-4)
+        if (
+            val_metrics["loss"] < best_val_loss
+            and not np.isnan(val_metrics["loss"])
+            and not np.isinf(val_metrics["loss"])
+            and val_metrics["loss"] > 1e-4
+        ):
             best_val_loss = val_metrics["loss"]
             torch.save({
                 "epoch": epoch,
@@ -336,11 +376,16 @@ def train_model(
                 "input_size": input_size,
                 "feature_cols": feature_cols,
                 "model_type": model_type,
+                "train_loss": train_metrics["loss"],
+                "val_accuracy": val_metrics["accuracy"],
+                "val_auroc": val_metrics["auroc"],
+                "val_f1": val_metrics["f1"],
+                "class_weights": class_weights.cpu().tolist(),
             }, model_path)
-            logger.info(f"  ✓ Saved best model (val_loss={best_val_loss:.4f})")
+            logger.info(f"  ✓ Saved best model (val_loss={best_val_loss:.4f}, {auc_str}, {f1_str})")
         
         # Early stopping
-        if early_stopping(val_metrics["loss"]):
+        if not np.isinf(val_metrics["loss"]) and early_stopping(val_metrics["loss"]):
             logger.info(f"Early stopping at epoch {epoch}")
             break
     
@@ -366,18 +411,20 @@ if __name__ == "__main__":
         help="Model architecture to train"
     )
     parser.add_argument(
-        "--epochs", type=int, default=config.NUM_EPOCHS,
+        "--epochs", type=int, default=15,
         help="Maximum training epochs"
     )
     parser.add_argument(
         "--demo", action="store_true",
-        help="Use synthetic data for demo"
+        help="Use synthetic data for training"
+    )
+    parser.add_argument(
+        "--data", type=str, default=None,
+        help="Custom dataset path"
     )
     args = parser.parse_args()
     
-    data_path = None
-    if args.demo:
-        data_path = "NONEXISTENT_PATH"  # Forces synthetic data generation
+    data_path = args.data if args.data else ("NONEXISTENT" if args.demo else None)
     
     result = train_model(
         model_type=args.model,

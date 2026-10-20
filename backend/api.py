@@ -323,6 +323,7 @@ def _generate_demo_data():
 # FastAPI Application
 # ═══════════════════════════════════════════════════════════════════
 
+from backend.biogears_schemas import SequentialWhatIfRequest, SequentialWhatIfResponse, build_sequential_whatif_response
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -1159,6 +1160,163 @@ async def list_simulation_jobs():
     """List recent BioGears background execution jobs."""
     from backend.biogears_service import job_manager
     return {"jobs": job_manager.list_jobs()}
+
+
+
+
+# ─── BioGears Sequential What-If & Mixed Intervention Endpoints ─────────────
+
+@app.post(
+    "/biogears/whatif/sequential",
+    summary="Sequential BioGears Saline What-If Simulation",
+)
+async def post_biogears_whatif_sequential(request: SequentialWhatIfRequest):
+    """
+    Execute a sequential saline intervention scenario on a continuous BioGears timeline
+    or return verified cached results if an identical scenario has been previously simulated.
+    """
+    from backend.biogears_scenario_builder import (
+        BioGearsSalineBolus,
+        BioGearsNorepinephrineInfusion,
+        BioGearsSequentialScenario,
+        BioGearsScenarioBuilderError,
+    )
+    from backend.biogears_sequential_execution import (
+        execute_sequential_saline_scenario,
+        execute_sequential_scenario,
+        BioGearsExtractionError,
+    )
+    from backend.biogears_bridge import (
+        BioGearsTimeoutError,
+        BioGearsProcessError,
+        BioGearsNotFoundError,
+        BioGearsOutputNotFoundError,
+        BioGearsOutputParseError,
+    )
+    from backend.biogears_schemas import build_sequential_whatif_response
+
+    req = request
+
+    # 1. Deterministic default scenario name if omitted
+    if req.scenario_name and req.scenario_name.strip():
+        scenario_name = req.scenario_name.strip()
+    else:
+        parts = []
+        for a in req.actions:
+            if a.type == "saline":
+                parts.append(f"{int(a.volume_ml)}mL")
+            else:
+                parts.append("Norepi14ug")
+        summary_str = "_".join(parts)
+        scenario_name = f"SeqIntervention_{len(req.actions)}actions_{summary_str}"
+
+    # 3. Map request actions to domain objects
+    try:
+        domain_actions = []
+        for act in req.actions:
+            if act.type == "saline":
+                domain_actions.append(
+                    BioGearsSalineBolus(
+                        bag_volume_ml=act.volume_ml,
+                        rate_ml_per_min=50.0,
+                        start_time_s=act.start_time_s,
+                    )
+                )
+            elif act.type == "norepinephrine":
+                domain_actions.append(
+                    BioGearsNorepinephrineInfusion(
+                        start_time_s=act.start_time_s,
+                        concentration_ug_ml=act.concentration_ug_ml,
+                        rate_ml_per_min=act.rate_ml_per_min,
+                        duration_s=act.duration_s,
+                    )
+                )
+            else:
+                raise BioGearsScenarioBuilderError(f"Unsupported action type '{act.type}'.")
+
+        scenario = BioGearsSequentialScenario(
+            scenario_name=scenario_name,
+            patient_file=req.patient_file,
+            samples_per_second=req.samples_per_second,
+            baseline_stabilization_s=req.baseline_stabilization_s,
+            post_observation_s=req.post_observation_s,
+            actions=domain_actions,
+        )
+        scenario.validate()
+    except (BioGearsScenarioBuilderError, ValueError) as err:
+        logger.warning(f"Scenario validation rejected: {err}")
+        raise HTTPException(status_code=422, detail=str(err))
+
+    # 4. Execute scenario through sequential pipeline with caching and concurrency locking
+    try:
+        if all(isinstance(a, BioGearsSalineBolus) for a in domain_actions):
+            exec_result = execute_sequential_saline_scenario(scenario=scenario, use_cache=True)
+        else:
+            exec_result = execute_sequential_scenario(scenario=scenario, use_cache=True)
+    except BioGearsScenarioBuilderError as err:
+        logger.warning(f"Scenario builder error during execution: {err}")
+        raise HTTPException(status_code=422, detail=str(err))
+    except BioGearsTimeoutError as err:
+        logger.error(f"BioGears execution timed out: {err}")
+        raise HTTPException(
+            status_code=504,
+            detail=f"BioGears simulation timed out after {err.timeout_seconds}s.",
+        )
+    except BioGearsNotFoundError as err:
+        logger.error(f"BioGears executable not found: {err}")
+        raise HTTPException(
+            status_code=503,
+            detail="BioGears engine executable not found on host system.",
+        )
+    except BioGearsProcessError as err:
+        logger.error(f"BioGears process error: exit code {err.returncode}. {err.stderr or err.stdout}")
+        raise HTTPException(
+            status_code=503,
+            detail="BioGears simulation engine returned a non-zero exit code.",
+        )
+    except BioGearsOutputNotFoundError as err:
+        logger.error(f"BioGears output missing: {err}")
+        raise HTTPException(
+            status_code=503,
+            detail="BioGears simulation completed but output CSV was not generated.",
+        )
+    except BioGearsOutputParseError as err:
+        logger.error(f"BioGears output parse error: {err}")
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to parse BioGears simulation output.",
+        )
+    except BioGearsExtractionError as err:
+        logger.error(f"Physiological extraction error: {err}")
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to extract physiological snapshots from simulation output.",
+        )
+    except Exception as err:
+        logger.error(f"Unexpected internal failure during scenario execution: {err}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail="Internal server error occurred during sequential scenario execution.",
+        )
+
+    # 5. Build and return structured response
+    response_model = build_sequential_whatif_response(exec_result)
+    return response_model.model_dump()
+
+
+@app.get("/biogears/intervention")
+@app.get("/intervention/simulate")
+async def get_biogears_intervention():
+    """
+    Return baseline vs post-intervention physiological state and model prediction
+    using the verified BioGears 100 mL saline experiment (StandardMale.xml).
+    """
+    from backend.biogears_intervention import compare_verified_saline_experiment
+    try:
+        return compare_verified_saline_experiment()
+    except Exception as e:
+        logger.error(f"Error evaluating BioGears intervention: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 if __name__ == "__main__":

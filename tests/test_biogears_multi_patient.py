@@ -26,6 +26,11 @@ RUN_DIR = os.path.join(
 PATIENT_1_CSV = os.path.join(RUN_DIR, "stable_6hour_results.csvResults.csv")
 PATIENT_2_CSV = os.path.join(RUN_DIR, "stable_6hour_saline_interventionResults.csv")
 
+pytestmark = pytest.mark.skipif(
+    not os.path.exists(PATIENT_1_CSV) or not os.path.exists(PATIENT_2_CSV),
+    reason="Requires generated BioGears simulation CSVs in biogears_runs",
+)
+
 
 @pytest.fixture
 def checkpoint_feature_cols():

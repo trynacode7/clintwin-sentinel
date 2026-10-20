@@ -55,13 +55,21 @@ def check_lactate_criterion(future_data: pd.DataFrame) -> bool:
 
 def check_map_criterion(future_data: pd.DataFrame) -> bool:
     """
-    Check if MAP drops below threshold in future window.
-    MAP < 65 indicates hypotension and potential organ hypoperfusion.
+    Check if MAP drops below threshold for sustained timesteps in future window.
+    Sustained hypotension (>=2 consecutive steps of MAP < 65) indicates
+    genuine organ hypoperfusion vs a momentary measurement artifact.
     """
-    map_values = future_data["map"].dropna()
-    if len(map_values) == 0:
-        return False
-    return (map_values < config.MAP_THRESHOLD).any()
+    map_values = future_data["map"].values
+    consecutive = 0
+    consecutive_steps = getattr(config, "MAP_CONSECUTIVE_STEPS", 2)
+    for val in map_values:
+        if not np.isnan(val) and val < config.MAP_THRESHOLD:
+            consecutive += 1
+            if consecutive >= consecutive_steps:
+                return True
+        else:
+            consecutive = 0
+    return False
 
 
 def check_hr_criterion(future_data: pd.DataFrame) -> bool:
