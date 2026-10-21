@@ -378,7 +378,7 @@ def test_fresh_execution_response_marking(client):
 
 def test_invalid_volume_rejected(client):
     """Unsupported bag volumes must be rejected with HTTP 422."""
-    for bad_vol in [0, 50, 150, 750, 2000, -100]:
+    for bad_vol in [0, 49, 1001, 2000, -100]:
         payload = {
             "actions": [{"type": "saline", "volume_ml": bad_vol, "start_time_s": 60.0}]
         }

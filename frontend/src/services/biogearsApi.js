@@ -17,6 +17,14 @@ export const MAX_OBSERVATION_PERIOD_S = 600.0;
 export const MIN_ACTIONS = 1;
 export const MAX_ACTIONS = 3;
 
+// Parameterized Saline constants (Step K2)
+export const MIN_SALINE_VOLUME_ML = 50.0;
+export const MAX_SALINE_VOLUME_ML = 1000.0;
+export const MIN_SALINE_RATE_ML_PER_MIN = 10.0;
+export const MAX_SALINE_RATE_ML_PER_MIN = 100.0;
+export const DEFAULT_SALINE_VOLUME_ML = 250.0;
+export const DEFAULT_SALINE_RATE_ML_PER_MIN = 50.0;
+
 // Verified Norepinephrine Infusion constants
 export const VERIFIED_NOREPINEPHRINE_CONCENTRATION_UG_ML = 14.0;
 export const VERIFIED_NOREPINEPHRINE_RATE_ML_PER_MIN = 1.0;
@@ -28,17 +36,19 @@ export const SUPPORTED_INTERVENTION_TYPES = ['saline', 'norepinephrine'];
  * - Saline bolus: (volumeMl / 50 mL/min) * 60s (e.g. 100 mL -> 120s, 250 mL -> 300s, 500 mL -> 600s)
  * - Norepinephrine infusion: locked verified 120s duration.
  */
-export function calculateDeliveryDuration(volumeOrAction) {
+export function calculateDeliveryDuration(volumeOrAction, rateMlPerMin = DEFAULT_SALINE_RATE_ML_PER_MIN) {
   if (typeof volumeOrAction === 'object' && volumeOrAction !== null) {
-    if (volumeOrAction.type === 'norepinephrine') {
+    if (volumeOrAction.type === 'norepinephrine' || volumeOrAction.substance === 'Norepinephrine') {
       return Number(volumeOrAction.duration_s ?? volumeOrAction.durationS ?? VERIFIED_NOREPINEPHRINE_DURATION_S);
     }
-    const vol = Number(volumeOrAction.volume_ml ?? volumeOrAction.volumeMl);
-    return calculateDeliveryDuration(vol);
+    const vol = Number(volumeOrAction.volume_ml ?? volumeOrAction.volumeMl ?? volumeOrAction.bag_volume_ml);
+    const rate = Number(volumeOrAction.rate_ml_per_min ?? volumeOrAction.rateMlPerMin ?? rateMlPerMin);
+    return calculateDeliveryDuration(vol, rate);
   }
   const vol = Number(volumeOrAction);
-  if (!Number.isFinite(vol) || vol <= 0) return 0;
-  return (vol / SALINE_INFUSION_RATE_ML_PER_MIN) * 60.0;
+  const rate = Number(rateMlPerMin);
+  if (!Number.isFinite(vol) || vol <= 0 || !Number.isFinite(rate) || rate <= 0) return 0;
+  return (vol / rate) * 60.0;
 }
 
 /**
@@ -60,6 +70,7 @@ export function validateSequentialSimulation({
   actions = [],
   baselineObservationS = DEFAULT_BASELINE_OBSERVATION_S,
   postObservationS = DEFAULT_POST_OBSERVATION_S,
+  parameterized = false,
 } = {}) {
   const baseline = Number(baselineObservationS);
   if (!Number.isFinite(baseline) || baseline <= 0) {
@@ -107,6 +118,7 @@ export function validateSequentialSimulation({
   }
 
   const actionErrors = new Array(actions.length).fill(null);
+  const suggestedStartTimes = new Array(actions.length).fill(null);
   let currentSimTime = baseline;
   let overallError = null;
 
@@ -114,6 +126,7 @@ export function validateSequentialSimulation({
     const act = actions[i];
     const actionType = act.type || 'saline';
     const start = Number(act.start_time_s ?? act.startTimeS);
+    suggestedStartTimes[i] = currentSimTime;
 
     if (!SUPPORTED_INTERVENTION_TYPES.includes(actionType)) {
       const msg = `Intervention ${i + 1}: Unsupported intervention type '${actionType}'. Supported: ${SUPPORTED_INTERVENTION_TYPES.join(', ')}.`;
@@ -125,13 +138,39 @@ export function validateSequentialSimulation({
     let deliveryDuration = 0;
     if (actionType === 'saline') {
       const vol = Number(act.volume_ml ?? act.volumeMl);
-      if (!SUPPORTED_SALINE_VOLUMES.includes(vol)) {
-        const msg = `Bolus ${i + 1}: Invalid saline volume (${act.volume_ml ?? act.volumeMl} mL). Supported volumes: ${SUPPORTED_SALINE_VOLUMES.join(', ')} mL.`;
+      const isParam = parameterized || act.rate_ml_per_min !== undefined || act.rateMlPerMin !== undefined;
+
+      if (!Number.isFinite(vol) || vol <= 0) {
+        const msg = `Bolus ${i + 1}: Saline volume must be a positive number.`;
         actionErrors[i] = msg;
         if (!overallError) overallError = msg;
         continue;
       }
-      deliveryDuration = calculateDeliveryDuration(vol);
+
+      if (isParam) {
+        if (vol < MIN_SALINE_VOLUME_ML || vol > MAX_SALINE_VOLUME_ML) {
+          const msg = `Bolus ${i + 1}: Invalid saline volume (${vol} mL). Allowed range: ${MIN_SALINE_VOLUME_ML}?${MAX_SALINE_VOLUME_ML} mL.`;
+          actionErrors[i] = msg;
+          if (!overallError) overallError = msg;
+          continue;
+        }
+      } else {
+        if (!SUPPORTED_SALINE_VOLUMES.includes(vol)) {
+          const msg = `Bolus ${i + 1}: Invalid saline volume (${act.volume_ml ?? act.volumeMl} mL). Supported volumes: ${SUPPORTED_SALINE_VOLUMES.join(', ')} mL.`;
+          actionErrors[i] = msg;
+          if (!overallError) overallError = msg;
+          continue;
+        }
+      }
+
+      const rate = Number(act.rate_ml_per_min ?? act.rateMlPerMin ?? DEFAULT_SALINE_RATE_ML_PER_MIN);
+      if (!Number.isFinite(rate) || rate < MIN_SALINE_RATE_ML_PER_MIN || rate > MAX_SALINE_RATE_ML_PER_MIN) {
+        const msg = `Bolus ${i + 1}: Invalid saline infusion rate (${rate} mL/min). Allowed range: ${MIN_SALINE_RATE_ML_PER_MIN}?${MAX_SALINE_RATE_ML_PER_MIN} mL/min.`;
+        actionErrors[i] = msg;
+        if (!overallError) overallError = msg;
+        continue;
+      }
+      deliveryDuration = calculateDeliveryDuration(vol, rate);
     } else if (actionType === 'norepinephrine') {
       const conc = Number(act.concentration_ug_ml ?? act.concentrationUgMl ?? VERIFIED_NOREPINEPHRINE_CONCENTRATION_UG_ML);
       const rate = Number(act.rate_ml_per_min ?? act.rateMlPerMin ?? VERIFIED_NOREPINEPHRINE_RATE_ML_PER_MIN);
@@ -167,9 +206,13 @@ export function validateSequentialSimulation({
 
     if (start < currentSimTime) {
       const label = actionType === 'saline' ? 'Bolus' : 'Infusion';
+      const prevAction = actions[i - 1];
+      const prevType = (prevAction?.type === 'norepinephrine' || prevAction?.substance === 'Norepinephrine')
+        ? 'infusion'
+        : 'bolus';
       const conflictMsg = i === 0
         ? `${label} 1 start time (${start}s) precedes baseline stabilization completion (${baseline}s). Increase start time to at least ${baseline}s.`
-        : `${label} ${i + 1} start time (${start}s) precedes previous bolus completion (${currentSimTime}s). Interventions must be sequential and non-overlapping. Increase start time to at least ${currentSimTime}s.`;
+        : `${label} ${i + 1} start time (${start}s) precedes previous ${prevType} completion (${currentSimTime}s). Interventions must be sequential and non-overlapping. Increase start time to at least ${currentSimTime}s.`;
       actionErrors[i] = conflictMsg;
       if (!overallError) overallError = conflictMsg;
       continue;
@@ -186,6 +229,7 @@ export function validateSequentialSimulation({
       valid: false,
       error: exceedsMsg,
       actionErrors,
+      suggestedStartTimes,
       totalDuration: totalSimDuration,
     };
   }
@@ -195,6 +239,7 @@ export function validateSequentialSimulation({
       valid: false,
       error: overallError,
       actionErrors,
+      suggestedStartTimes,
       totalDuration: totalSimDuration,
     };
   }
@@ -203,6 +248,7 @@ export function validateSequentialSimulation({
     valid: true,
     error: null,
     actionErrors,
+    suggestedStartTimes,
     totalDuration: totalSimDuration,
   };
 }
@@ -319,11 +365,15 @@ export function buildSequentialPayload(actionsOrVolume, baselineObservationS = 6
         start_time_s: Number(act.start_time_s ?? act.startTimeS),
       };
     }
-    return {
+    const salineAction = {
       type: 'saline',
       volume_ml: Number(act.volume_ml ?? act.volumeMl),
       start_time_s: Number(act.start_time_s ?? act.startTimeS),
     };
+    if (act.rate_ml_per_min !== undefined || act.rateMlPerMin !== undefined) {
+      salineAction.rate_ml_per_min = Number(act.rate_ml_per_min ?? act.rateMlPerMin);
+    }
+    return salineAction;
   });
 
   const hasNorepi = mappedActions.some((a) => a.type === 'norepinephrine');

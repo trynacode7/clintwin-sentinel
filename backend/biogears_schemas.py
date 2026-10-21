@@ -13,6 +13,12 @@ from backend.biogears_scenario_builder import (
     BioGearsNorepinephrineInfusion,
     VERIFIED_SALINE_RATE,
     VERIFIED_SALINE_VOLUMES,
+    MIN_SALINE_VOLUME_ML,
+    MAX_SALINE_VOLUME_ML,
+    MIN_SALINE_RATE_ML_PER_MIN,
+    MAX_SALINE_RATE_ML_PER_MIN,
+    DEFAULT_SALINE_VOLUME_ML,
+    DEFAULT_SALINE_RATE_ML_PER_MIN,
     VERIFIED_NOREPINEPHRINE_CONCENTRATION,
     VERIFIED_NOREPINEPHRINE_RATE,
     VERIFIED_NOREPINEPHRINE_DURATION,
@@ -30,16 +36,58 @@ class SalineActionRequest(BaseModel):
     """Specification for a single saline bolus action on the continuous timeline."""
 
     type: Literal["saline"] = Field("saline", description="Action type: strictly 'saline'.")
-    volume_ml: float = Field(..., description="Volume in mL. Supported verified volumes: 100, 250, 500.")
+    volume_ml: float = Field(
+        DEFAULT_SALINE_VOLUME_ML,
+        description=f"Volume in mL. Supported range: {MIN_SALINE_VOLUME_ML} to {MAX_SALINE_VOLUME_ML} mL.",
+    )
+    rate_ml_per_min: float = Field(
+        DEFAULT_SALINE_RATE_ML_PER_MIN,
+        description=f"Infusion rate in mL/min. Supported range: {MIN_SALINE_RATE_ML_PER_MIN} to {MAX_SALINE_RATE_ML_PER_MIN} mL/min.",
+    )
     start_time_s: float = Field(..., ge=0, description="Start timestamp on the continuous timeline in seconds.")
+
+    @field_validator("start_time_s")
+    @classmethod
+    def validate_saline_start_time(cls, v: float) -> float:
+        import math
+        if not isinstance(v, (int, float)) or math.isnan(v) or math.isinf(v):
+            raise ValueError("start_time_s must be a finite number.")
+        if v < 0:
+            raise ValueError("start_time_s must be non-negative.")
+        return float(v)
 
     @field_validator("volume_ml")
     @classmethod
     def validate_volume(cls, v: float) -> float:
-        if v not in VERIFIED_SALINE_VOLUMES:
+        import math
+        if not isinstance(v, (int, float)) or math.isnan(v) or math.isinf(v):
+            raise ValueError("volume_ml must be a finite number.")
+        if v < MIN_SALINE_VOLUME_ML or v > MAX_SALINE_VOLUME_ML:
             raise ValueError(
-                f"Invalid volume_ml {v}. Supported saline volumes: {sorted(list(VERIFIED_SALINE_VOLUMES))} mL."
+                f"Invalid volume_ml {v}. Supported saline volumes range from {MIN_SALINE_VOLUME_ML} to {MAX_SALINE_VOLUME_ML} mL."
             )
+        return float(v)
+
+    @field_validator("rate_ml_per_min")
+    @classmethod
+    def validate_rate(cls, v: float) -> float:
+        import math
+        if not isinstance(v, (int, float)) or math.isnan(v) or math.isinf(v):
+            raise ValueError("rate_ml_per_min must be a finite number.")
+        if v < MIN_SALINE_RATE_ML_PER_MIN or v > MAX_SALINE_RATE_ML_PER_MIN:
+            raise ValueError(
+                f"Invalid rate_ml_per_min {v}. Supported saline infusion rates range from {MIN_SALINE_RATE_ML_PER_MIN} to {MAX_SALINE_RATE_ML_PER_MIN} mL/min."
+            )
+        return float(v)
+
+    @field_validator("start_time_s")
+    @classmethod
+    def validate_norepi_start_time(cls, v: float) -> float:
+        import math
+        if not isinstance(v, (int, float)) or math.isnan(v) or math.isinf(v):
+            raise ValueError("start_time_s must be a finite number.")
+        if v < 0:
+            raise ValueError("start_time_s must be non-negative.")
         return float(v)
 
     @field_validator("type")
@@ -47,7 +95,7 @@ class SalineActionRequest(BaseModel):
     def validate_type(cls, v: str) -> str:
         if v != "saline":
             raise ValueError(
-                f"Unsupported action type '{v}'. Phase D Step E strictly supports 'saline' actions."
+                f"Unsupported action type '{v}'. Expected 'saline'."
             )
         return v
 

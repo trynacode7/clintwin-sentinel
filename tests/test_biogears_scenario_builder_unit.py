@@ -516,22 +516,32 @@ class TestBioGearsSalineBolus:
         assert bolus.delivery_time_s == pytest.approx(600.0)
 
     def test_rejection_of_unsupported_volumes(self):
-        for unsupp_vol in (50.0, 150.0, 200.0, 750.0, 1000.0, 2000.0):
-            with pytest.raises(BioGearsScenarioBuilderError, match="unverified"):
+        for unsupp_vol in (0.0, 49.9, 1000.1, 2000.0, -100.0):
+            with pytest.raises(BioGearsScenarioBuilderError, match="outside approved bounds|positive finite number"):
                 BioGearsSalineBolus(bag_volume_ml=unsupp_vol)
 
+    def test_acceptance_of_parameterized_volumes(self):
+        for vol in (50.0, 100.0, 150.0, 250.0, 500.0, 750.0, 1000.0):
+            b = BioGearsSalineBolus(bag_volume_ml=vol)
+            assert b.bag_volume_ml == vol
+
     def test_rejection_of_zero_volume(self):
-        with pytest.raises(BioGearsScenarioBuilderError, match="positive number"):
+        with pytest.raises(BioGearsScenarioBuilderError, match="positive finite number"):
             BioGearsSalineBolus(bag_volume_ml=0.0)
 
     def test_rejection_of_negative_volume(self):
-        with pytest.raises(BioGearsScenarioBuilderError, match="positive number"):
+        with pytest.raises(BioGearsScenarioBuilderError, match="positive finite number"):
             BioGearsSalineBolus(bag_volume_ml=-100.0)
 
     def test_rejection_of_unsupported_rate(self):
-        for unsupp_rate in (0.0, 25.0, 100.0, -50.0):
-            with pytest.raises(BioGearsScenarioBuilderError, match="rate_ml_per_min"):
+        for unsupp_rate in (0.0, 9.9, 100.1, -50.0):
+            with pytest.raises(BioGearsScenarioBuilderError, match="outside approved bounds|positive finite number"):
                 BioGearsSalineBolus(bag_volume_ml=100.0, rate_ml_per_min=unsupp_rate)
+
+    def test_acceptance_of_parameterized_rates(self):
+        for rate in (10.0, 25.0, 50.0, 75.0, 100.0):
+            b = BioGearsSalineBolus(bag_volume_ml=250.0, rate_ml_per_min=rate)
+            assert b.rate_ml_per_min == rate
 
     def test_rejection_of_negative_start_time(self):
         with pytest.raises(BioGearsScenarioBuilderError, match="start_time_s"):

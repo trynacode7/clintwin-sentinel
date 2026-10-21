@@ -18,6 +18,12 @@ import {
   VERIFIED_NOREPINEPHRINE_CONCENTRATION_UG_ML,
   VERIFIED_NOREPINEPHRINE_RATE_ML_PER_MIN,
   VERIFIED_NOREPINEPHRINE_DURATION_S,
+  MIN_SALINE_VOLUME_ML,
+  MAX_SALINE_VOLUME_ML,
+  MIN_SALINE_RATE_ML_PER_MIN,
+  MAX_SALINE_RATE_ML_PER_MIN,
+  DEFAULT_SALINE_VOLUME_ML,
+  DEFAULT_SALINE_RATE_ML_PER_MIN,
 } from '../services/biogearsApi';
 import ScenarioComparisonChart from './ScenarioComparisonChart';
 
@@ -53,12 +59,14 @@ export default function ScenarioComparisonWorkspace() {
         actions: strat.actions,
         baselineObservationS: strat.baseline_s,
         postObservationS: strat.post_s,
+        parameterized: true,
       });
       return {
         id: strat.id,
         valid: res.valid,
         error: res.error,
         actionErrors: res.actionErrors,
+        suggestedStartTimes: res.suggestedStartTimes || [],
         totalDuration: res.totalDuration,
       };
     });
@@ -159,6 +167,40 @@ export default function ScenarioComparisonWorkspace() {
     );
   };
 
+  const handleLoadTargetSandbox = () => {
+    if (running) return;
+    setStrategies([
+      {
+        id: 'strategy_sandbox',
+        name: 'Target What-If: 250mL Saline + Norepi',
+        color: '#06b6d4',
+        baseline_s: 60,
+        post_s: 60,
+        actions: [
+          {
+            id: 'act_s1',
+            type: 'saline',
+            volume_ml: 250,
+            rate_ml_per_min: 50,
+            start_time_s: 60,
+          },
+          {
+            id: 'act_s2',
+            type: 'norepinephrine',
+            concentration_ug_ml: VERIFIED_NOREPINEPHRINE_CONCENTRATION_UG_ML,
+            rate_ml_per_min: VERIFIED_NOREPINEPHRINE_RATE_ML_PER_MIN,
+            duration_s: VERIFIED_NOREPINEPHRINE_DURATION_S,
+            start_time_s: 210, // Target test setting: demonstrates overlap warning
+          },
+        ],
+      },
+      ...DEFAULT_STEP_J_STRATEGIES.slice(0, 2),
+    ]);
+    setResultsMap({});
+    setReferenceId('strategy_sandbox');
+    setGeneralError(null);
+  };
+
   const handleAddIntervention = (strategyId, type = 'saline') => {
     setStrategies((prev) =>
       prev.map((strat) => {
@@ -166,7 +208,7 @@ export default function ScenarioComparisonWorkspace() {
         const lastAction = strat.actions[strat.actions.length - 1];
         const lastDuration = (lastAction?.type === 'norepinephrine' || lastAction?.substance === 'Norepinephrine')
           ? VERIFIED_NOREPINEPHRINE_DURATION_S
-          : calculateDeliveryDuration(lastAction?.volume_ml || 100);
+          : calculateDeliveryDuration(lastAction?.volume_ml || 250, lastAction?.rate_ml_per_min || 50);
         const lastEnd = Number(lastAction?.start_time_s || 60) + lastDuration;
         const newStart = Math.max(lastEnd, lastEnd + 30);
 
@@ -182,7 +224,8 @@ export default function ScenarioComparisonWorkspace() {
           : {
               id: `act_${Date.now()}`,
               type: 'saline',
-              volume_ml: 100,
+              volume_ml: 250,
+              rate_ml_per_min: 50,
               start_time_s: newStart,
             };
 
@@ -233,14 +276,15 @@ export default function ScenarioComparisonWorkspace() {
             current.rate_ml_per_min = VERIFIED_NOREPINEPHRINE_RATE_ML_PER_MIN;
             current.duration_s = VERIFIED_NOREPINEPHRINE_DURATION_S;
             delete current.volume_ml;
+            delete current.rate_ml_per_min;
           } else {
             current.type = 'saline';
-            current.volume_ml = 100;
+            current.volume_ml = current.volume_ml || 250;
+            current.rate_ml_per_min = current.rate_ml_per_min || 50;
             delete current.concentration_ug_ml;
-            delete current.rate_ml_per_min;
             delete current.duration_s;
           }
-        } else if (field === 'volume_ml' || field === 'start_time_s') {
+        } else if (field === 'volume_ml' || field === 'start_time_s' || field === 'rate_ml_per_min') {
           current[field] = Number(value);
         } else {
           current[field] = value;
@@ -483,16 +527,21 @@ export default function ScenarioComparisonWorkspace() {
                   </div>
 
                   {strat.actions.map((act, aIdx) => {
-                    const isNorepi = act.type === 'norepinephrine';
+                    const isNorepi = act.type === 'norepinephrine' || act.substance === 'Norepinephrine';
+                    const vol = Number(act.volume_ml ?? 250);
+                    const rate = Number(act.rate_ml_per_min ?? 50);
                     const dur = isNorepi
                       ? VERIFIED_NOREPINEPHRINE_DURATION_S
-                      : calculateDeliveryDuration(act.volume_ml || 100);
+                      : calculateDeliveryDuration(vol, rate);
+                    const startTime = Number(act.start_time_s ?? 60);
+                    const completionTime = startTime + dur;
                     const aError = validation?.actionErrors?.[aIdx];
+                    const suggestedStart = validation?.suggestedStartTimes?.[aIdx];
 
                     return (
                       <div
                         key={act.id || aIdx}
-                        className="p-2.5 rounded-lg bg-slate-950/70 border border-slate-800/90 space-y-2"
+                        className="p-3 rounded-lg bg-slate-950/70 border border-slate-800/90 space-y-2.5"
                       >
                         <div className="flex items-center justify-between text-[11px]">
                           <div className="flex items-center gap-1.5">
@@ -506,13 +555,13 @@ export default function ScenarioComparisonWorkspace() {
                                   : 'bg-cyan-950/80 text-cyan-300 border border-cyan-800/50'
                               }`}
                             >
-                              {isNorepi ? 'Norepinephrine' : 'Saline Bolus'}
+                              {isNorepi ? 'Norepinephrine' : 'Normal Saline'}
                             </span>
                           </div>
 
                           <div className="flex items-center gap-1.5">
-                            <span className="font-mono text-[10px] text-slate-500">
-                              {dur}s ({dur / 60}m)
+                            <span className="font-mono text-[10px] text-slate-400">
+                              {dur}s ({dur / 60}m) ? Ends {completionTime}s
                             </span>
 
                             {/* Reordering controls */}
@@ -522,7 +571,7 @@ export default function ScenarioComparisonWorkspace() {
                               className="text-slate-500 hover:text-slate-200 disabled:opacity-20 text-[10px] px-1 py-0.5 rounded hover:bg-slate-800 cursor-pointer"
                               title="Move action earlier in sequence"
                             >
-                              ↑
+                              ?
                             </button>
                             <button
                               onClick={() => handleMoveIntervention(strat.id, aIdx, 1)}
@@ -530,7 +579,7 @@ export default function ScenarioComparisonWorkspace() {
                               className="text-slate-500 hover:text-slate-200 disabled:opacity-20 text-[10px] px-1 py-0.5 rounded hover:bg-slate-800 cursor-pointer"
                               title="Move action later in sequence"
                             >
-                              ↓
+                              ?
                             </button>
 
                             {strat.actions.length > 1 && (
@@ -540,7 +589,7 @@ export default function ScenarioComparisonWorkspace() {
                                 className="text-slate-500 hover:text-rose-400 text-[10px] px-1 py-0.5 cursor-pointer"
                                 title="Remove intervention"
                               >
-                                ✕
+                                ?
                               </button>
                             )}
                           </div>
@@ -585,36 +634,115 @@ export default function ScenarioComparisonWorkspace() {
 
                         {/* Dose / Volume Parameters */}
                         {isNorepi ? (
-                          <div className="p-1.5 rounded bg-purple-950/30 border border-purple-900/40 text-[10px] text-purple-300 font-mono flex items-center justify-between">
-                            <span>Locked Verified Dose:</span>
-                            <span>14 µg/mL @ 1 mL/min (120s)</span>
+                          <div className="p-2 rounded bg-purple-950/30 border border-purple-900/40 text-[10px] text-purple-300 font-mono space-y-1">
+                            <div className="flex items-center justify-between">
+                              <span className="text-purple-400 font-semibold">Locked Verified Dose:</span>
+                              <span className="text-[9px] px-1.5 py-0.2 rounded bg-purple-900/50 text-purple-200 border border-purple-700/50">BioGears Standard</span>
+                            </div>
+                            <div className="grid grid-cols-3 gap-1 pt-0.5 text-slate-300 text-[10px]">
+                              <div>Conc: <span className="text-purple-300 font-bold">14 ?g/mL</span></div>
+                              <div>Rate: <span className="text-purple-300 font-bold">1.0 mL/min</span></div>
+                              <div>Dur: <span className="text-purple-300 font-bold">120s</span></div>
+                            </div>
                           </div>
                         ) : (
-                          <div>
-                            <label className="block text-[10px] text-slate-400 mb-1">
-                              Bolus Volume (at 50 mL/min)
-                            </label>
-                            <select
-                              value={act.volume_ml || 100}
-                              onChange={(e) =>
-                                handleUpdateIntervention(strat.id, aIdx, 'volume_ml', e.target.value)
-                              }
-                              disabled={running}
-                              className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-slate-200 text-xs focus:border-cyan-500 outline-none"
-                            >
-                              {SUPPORTED_SALINE_VOLUMES.map((v) => (
-                                <option key={v} value={v}>
-                                  {v} mL
-                                </option>
-                              ))}
-                            </select>
+                          <div className="space-y-2">
+                            {/* Volume Input + Presets */}
+                            <div>
+                              <div className="flex items-center justify-between text-[10px] mb-1">
+                                <label className="text-slate-400">Saline Volume (mL)</label>
+                                <div className="flex items-center gap-1">
+                                  {[100, 250, 500].map((v) => (
+                                    <button
+                                      key={v}
+                                      type="button"
+                                      onClick={() => handleUpdateIntervention(strat.id, aIdx, 'volume_ml', v)}
+                                      disabled={running}
+                                      className={`px-1.5 py-0.2 rounded text-[9px] font-mono cursor-pointer border ${
+                                        vol === v
+                                          ? 'bg-cyan-900/80 text-cyan-200 border-cyan-500'
+                                          : 'bg-slate-900 text-slate-400 border-slate-700 hover:text-slate-200'
+                                      }`}
+                                    >
+                                      {v}
+                                    </button>
+                                  ))}
+                                </div>
+                              </div>
+                              <input
+                                type="number"
+                                min={MIN_SALINE_VOLUME_ML}
+                                max={MAX_SALINE_VOLUME_ML}
+                                step="10"
+                                value={vol}
+                                onChange={(e) =>
+                                  handleUpdateIntervention(strat.id, aIdx, 'volume_ml', e.target.value)
+                                }
+                                disabled={running}
+                                className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-slate-200 text-xs font-mono focus:border-cyan-500 outline-none"
+                              />
+                            </div>
+
+                            {/* Infusion Rate Input + Presets */}
+                            <div>
+                              <div className="flex items-center justify-between text-[10px] mb-1">
+                                <label className="text-slate-400">Infusion Rate (mL/min)</label>
+                                <div className="flex items-center gap-1">
+                                  {[25, 50, 75].map((r) => (
+                                    <button
+                                      key={r}
+                                      type="button"
+                                      onClick={() => handleUpdateIntervention(strat.id, aIdx, 'rate_ml_per_min', r)}
+                                      disabled={running}
+                                      className={`px-1.5 py-0.2 rounded text-[9px] font-mono cursor-pointer border ${
+                                        rate === r
+                                          ? 'bg-cyan-900/80 text-cyan-200 border-cyan-500'
+                                          : 'bg-slate-900 text-slate-400 border-slate-700 hover:text-slate-200'
+                                      }`}
+                                    >
+                                      {r}
+                                    </button>
+                                  ))}
+                                </div>
+                              </div>
+                              <input
+                                type="number"
+                                min={MIN_SALINE_RATE_ML_PER_MIN}
+                                max={MAX_SALINE_RATE_ML_PER_MIN}
+                                step="5"
+                                value={rate}
+                                onChange={(e) =>
+                                  handleUpdateIntervention(strat.id, aIdx, 'rate_ml_per_min', e.target.value)
+                                }
+                                disabled={running}
+                                className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-slate-200 text-xs font-mono focus:border-cyan-500 outline-none"
+                              />
+                            </div>
+
+                            <div className="text-[10px] text-cyan-400/90 font-mono px-1">
+                              Delivers {vol} mL @ {rate} mL/min over {dur}s ({dur / 60}m) ? Ends {completionTime}s
+                            </div>
                           </div>
                         )}
 
+                        {/* Inline Error & Earliest Valid Start Time Suggestion */}
                         {aError && (
-                          <p className="text-[10px] text-rose-400 mt-1 leading-tight">
-                            {aError}
-                          </p>
+                          <div className="p-2 rounded bg-rose-950/60 border border-rose-800/80 text-rose-300 text-[10px] leading-tight space-y-1.5">
+                            <div>{aError}</div>
+                            {suggestedStart !== null && suggestedStart > startTime && (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  handleUpdateIntervention(strat.id, aIdx, 'start_time_s', suggestedStart)
+                                }
+                                disabled={running}
+                                className="w-full px-2 py-1 rounded bg-amber-950/90 hover:bg-amber-900/90 border border-amber-600/70 text-amber-200 font-mono text-[10px] font-medium flex items-center justify-center gap-1.5 cursor-pointer shadow-sm transition-all"
+                              >
+                                <span>Set to earliest technically valid start:</span>
+                                <span className="font-bold underline">{suggestedStart}s</span>
+                              </button>
+                            )}
+                          </div>
                         )}
                       </div>
                     );

@@ -1204,7 +1204,9 @@ async def post_biogears_whatif_sequential(request: SequentialWhatIfRequest):
         parts = []
         for a in req.actions:
             if a.type == "saline":
-                parts.append(f"{int(a.volume_ml)}mL")
+                rate_val = getattr(a, "rate_ml_per_min", 50.0)
+                rate_tag = f"@{int(rate_val)}mLmin" if rate_val != 50.0 else ""
+                parts.append(f"{int(a.volume_ml)}mL{rate_tag}")
             else:
                 parts.append("Norepi14ug")
         summary_str = "_".join(parts)
@@ -1218,7 +1220,7 @@ async def post_biogears_whatif_sequential(request: SequentialWhatIfRequest):
                 domain_actions.append(
                     BioGearsSalineBolus(
                         bag_volume_ml=act.volume_ml,
-                        rate_ml_per_min=50.0,
+                        rate_ml_per_min=getattr(act, "rate_ml_per_min", 50.0),
                         start_time_s=act.start_time_s,
                     )
                 )

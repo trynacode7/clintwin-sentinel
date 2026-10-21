@@ -110,6 +110,13 @@ class BioGearsFluidBolus:
 VERIFIED_SALINE_VOLUMES = {100.0, 250.0, 500.0}
 VERIFIED_SALINE_RATE = 50.0
 
+MIN_SALINE_VOLUME_ML = 50.0
+MAX_SALINE_VOLUME_ML = 1000.0
+MIN_SALINE_RATE_ML_PER_MIN = 10.0
+MAX_SALINE_RATE_ML_PER_MIN = 100.0
+DEFAULT_SALINE_VOLUME_ML = 250.0
+DEFAULT_SALINE_RATE_ML_PER_MIN = 50.0
+
 VERIFIED_NOREPINEPHRINE_CONCENTRATION = 14.0  # ug/mL
 VERIFIED_NOREPINEPHRINE_RATE = 1.0           # mL/min
 VERIFIED_NOREPINEPHRINE_DURATION = 120.0     # s (strictly locked to verified 120s)
@@ -117,35 +124,40 @@ VERIFIED_NOREPINEPHRINE_DURATION = 120.0     # s (strictly locked to verified 12
 
 @dataclass(frozen=True)
 class BioGearsSalineBolus:
-    """Verified IV Saline Bolus for sequential What-If scenarios.
+    """IV Saline Bolus for sequential What-If scenarios.
 
     Maps to BioGears SubstanceCompoundInfusionData.
-    Supported bag volumes: 100.0, 250.0, 500.0 mL.
-    Infusion rate is strictly locked to verified 50.0 mL/min.
+    Supported bag volumes: 50.0 to 1000.0 mL (verified presets: 100, 250, 500 mL).
+    Supported infusion rate: 10.0 to 100.0 mL/min (default: 50.0 mL/min).
     """
 
-    bag_volume_ml: float
-    rate_ml_per_min: float = VERIFIED_SALINE_RATE
+    bag_volume_ml: float = DEFAULT_SALINE_VOLUME_ML
+    rate_ml_per_min: float = DEFAULT_SALINE_RATE_ML_PER_MIN
     start_time_s: float = 60.0
 
     def __post_init__(self):
-        if not isinstance(self.bag_volume_ml, (int, float)) or self.bag_volume_ml <= 0:
+        import math
+        if not isinstance(self.bag_volume_ml, (int, float)) or math.isnan(self.bag_volume_ml) or math.isinf(self.bag_volume_ml) or self.bag_volume_ml <= 0:
             raise BioGearsScenarioBuilderError(
-                f"BioGearsSalineBolus: bag_volume_ml must be a positive number, got {self.bag_volume_ml!r}."
+                f"BioGearsSalineBolus: bag_volume_ml must be a positive finite number, got {self.bag_volume_ml!r}."
             )
-        if self.bag_volume_ml not in VERIFIED_SALINE_VOLUMES:
+        if self.bag_volume_ml < MIN_SALINE_VOLUME_ML or self.bag_volume_ml > MAX_SALINE_VOLUME_ML:
             raise BioGearsScenarioBuilderError(
-                f"BioGearsSalineBolus: bag_volume_ml {self.bag_volume_ml} is unverified. "
-                f"Supported volumes: {sorted(list(VERIFIED_SALINE_VOLUMES))} mL."
+                f"BioGearsSalineBolus: bag_volume_ml {self.bag_volume_ml} is outside approved bounds "
+                f"[{MIN_SALINE_VOLUME_ML}, {MAX_SALINE_VOLUME_ML}] mL."
             )
-        if self.rate_ml_per_min != VERIFIED_SALINE_RATE:
+        if not isinstance(self.rate_ml_per_min, (int, float)) or math.isnan(self.rate_ml_per_min) or math.isinf(self.rate_ml_per_min) or self.rate_ml_per_min <= 0:
             raise BioGearsScenarioBuilderError(
-                f"BioGearsSalineBolus: rate_ml_per_min {self.rate_ml_per_min} is unverified. "
-                f"Supported rate: {VERIFIED_SALINE_RATE} mL/min."
+                f"BioGearsSalineBolus: rate_ml_per_min must be a positive finite number, got {self.rate_ml_per_min!r}."
             )
-        if not isinstance(self.start_time_s, (int, float)) or self.start_time_s < 0:
+        if self.rate_ml_per_min < MIN_SALINE_RATE_ML_PER_MIN or self.rate_ml_per_min > MAX_SALINE_RATE_ML_PER_MIN:
             raise BioGearsScenarioBuilderError(
-                f"BioGearsSalineBolus: start_time_s must be non-negative, got {self.start_time_s!r}."
+                f"BioGearsSalineBolus: rate_ml_per_min {self.rate_ml_per_min} is outside approved bounds "
+                f"[{MIN_SALINE_RATE_ML_PER_MIN}, {MAX_SALINE_RATE_ML_PER_MIN}] mL/min."
+            )
+        if not isinstance(self.start_time_s, (int, float)) or math.isnan(self.start_time_s) or math.isinf(self.start_time_s) or self.start_time_s < 0:
+            raise BioGearsScenarioBuilderError(
+                f"BioGearsSalineBolus: start_time_s must be non-negative and finite, got {self.start_time_s!r}."
             )
 
     @property
@@ -673,15 +685,15 @@ def _validate_sequential_scenario(scenario: BioGearsSequentialScenario) -> None:
     current_t = scenario.baseline_stabilization_s
     for i, action in enumerate(scenario.actions):
         if isinstance(action, BioGearsSalineBolus):
-            if action.bag_volume_ml not in VERIFIED_SALINE_VOLUMES:
+            if action.bag_volume_ml < MIN_SALINE_VOLUME_ML or action.bag_volume_ml > MAX_SALINE_VOLUME_ML:
                 raise BioGearsScenarioBuilderError(
-                    f"actions[{i}]: bag_volume_ml {action.bag_volume_ml} is unverified. "
-                    f"Supported volumes: {sorted(list(VERIFIED_SALINE_VOLUMES))} mL."
+                    f"actions[{i}]: bag_volume_ml {action.bag_volume_ml} is outside approved bounds "
+                    f"[{MIN_SALINE_VOLUME_ML}, {MAX_SALINE_VOLUME_ML}] mL."
                 )
-            if action.rate_ml_per_min != VERIFIED_SALINE_RATE:
+            if action.rate_ml_per_min < MIN_SALINE_RATE_ML_PER_MIN or action.rate_ml_per_min > MAX_SALINE_RATE_ML_PER_MIN:
                 raise BioGearsScenarioBuilderError(
-                    f"actions[{i}]: rate_ml_per_min {action.rate_ml_per_min} is unverified. "
-                    f"Supported rate: {VERIFIED_SALINE_RATE} mL/min."
+                    f"actions[{i}]: rate_ml_per_min {action.rate_ml_per_min} is outside approved bounds "
+                    f"[{MIN_SALINE_RATE_ML_PER_MIN}, {MAX_SALINE_RATE_ML_PER_MIN}] mL/min."
                 )
         elif isinstance(action, BioGearsNorepinephrineInfusion):
             if action.concentration_ug_ml != VERIFIED_NOREPINEPHRINE_CONCENTRATION:
