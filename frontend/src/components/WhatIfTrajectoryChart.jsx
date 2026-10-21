@@ -92,7 +92,7 @@ export default function WhatIfTrajectoryChart({
         const isNorepi = actionType === 'norepinephrine';
         const vol = act.bag_volume_ml ?? act.volume_ml ?? act.volumeMl;
         const start = Number(act.start_time_s ?? act.startTimeS);
-        const duration = Number(act.delivery_duration_s ?? act.duration_s ?? (isNorepi ? 120 : (vol ? (vol / 50.0) * 60 : 120)));
+        const duration = Number(act.delivery_duration_s ?? act.duration_s ?? (isNorepi ? 120 : (vol ? (vol / (Number(act.rate_ml_per_min || act.rateMlPerMin) || 50.0)) * 60 : 120)));
         const end = start + duration;
         const interventionNum = act.action_index !== undefined ? act.action_index + 1 : idx + 1;
         const name = isNorepi ? `Norepi ${interventionNum}` : `Bolus ${interventionNum}`;

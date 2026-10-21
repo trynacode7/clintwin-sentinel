@@ -80,6 +80,7 @@ import torch
 import logging
 from typing import Optional, List, Dict
 from contextlib import asynccontextmanager
+from starlette.concurrency import run_in_threadpool
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import config
@@ -1252,9 +1253,13 @@ async def post_biogears_whatif_sequential(request: SequentialWhatIfRequest):
     # 4. Execute scenario through sequential pipeline with caching and concurrency locking
     try:
         if all(isinstance(a, BioGearsSalineBolus) for a in domain_actions):
-            exec_result = execute_sequential_saline_scenario(scenario=scenario, use_cache=True)
+            exec_result = await run_in_threadpool(
+                execute_sequential_saline_scenario, scenario=scenario, use_cache=True
+            )
         else:
-            exec_result = execute_sequential_scenario(scenario=scenario, use_cache=True)
+            exec_result = await run_in_threadpool(
+                execute_sequential_scenario, scenario=scenario, use_cache=True
+            )
     except BioGearsScenarioBuilderError as err:
         logger.warning(f"Scenario builder error during execution: {err}")
         raise HTTPException(status_code=422, detail=str(err))

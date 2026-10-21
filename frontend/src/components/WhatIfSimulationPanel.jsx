@@ -65,7 +65,7 @@ export default function WhatIfSimulationPanel() {
   const getActionDuration = (act) => {
     if (!act) return 120;
     if (act.type === 'norepinephrine') return VERIFIED_NOREPINEPHRINE_DURATION_S;
-    return calculateDeliveryDuration(act.volume_ml ?? 100);
+    return calculateDeliveryDuration(act.volume_ml ?? 100, act.rate_ml_per_min ?? 50.0);
   };
 
   // Handle switching the number of interventions (1, 2, or 3)
@@ -215,6 +215,7 @@ export default function WhatIfSimulationPanel() {
     } catch (err) {
       console.error('BioGears simulation execution error:', err);
       setError(err.message || 'An unexpected error occurred during simulation.');
+      setSimulationResult(null);
     } finally {
       if (timerRef.current) {
         clearInterval(timerRef.current);
@@ -393,7 +394,7 @@ export default function WhatIfSimulationPanel() {
             const actionType = act.type || 'saline';
             const isNorepi = actionType === 'norepinephrine';
             const vol = Number(act.volume_ml ?? 100);
-            const deliveryDuration = isNorepi ? VERIFIED_NOREPINEPHRINE_DURATION_S : calculateDeliveryDuration(vol);
+            const deliveryDuration = isNorepi ? VERIFIED_NOREPINEPHRINE_DURATION_S : calculateDeliveryDuration(vol, act.rate_ml_per_min ?? 50.0);
             const startTime = Number(act.start_time_s);
             const endTime = startTime + deliveryDuration;
             const rowError = currentValidation.actionErrors[idx];
@@ -520,11 +521,26 @@ export default function WhatIfSimulationPanel() {
 
                 {/* Inline Action Validation Warning */}
                 {rowError && (
-                  <div className="mt-2 pt-2 border-t border-amber-900/40 text-[11px] text-amber-300 flex items-center gap-1.5">
-                    <svg className="w-3.5 h-3.5 text-amber-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-                    </svg>
-                    <span>{rowError}</span>
+                  <div className="mt-2 pt-2 border-t border-amber-900/40 text-[11px] text-amber-300 space-y-1.5">
+                    <div className="flex items-center gap-1.5">
+                      <svg className="w-3.5 h-3.5 text-amber-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                      </svg>
+                      <span>{rowError}</span>
+                    </div>
+                    {currentValidation?.suggestedStartTimes?.[idx] !== null &&
+                      currentValidation?.suggestedStartTimes?.[idx] !== undefined &&
+                      currentValidation.suggestedStartTimes[idx] > Number(act.start_time_s) && (
+                        <button
+                          type="button"
+                          onClick={() => handleUpdateAction(idx, 'start_time_s', currentValidation.suggestedStartTimes[idx])}
+                          disabled={loading}
+                          className="w-full px-2 py-1 rounded bg-amber-950/90 hover:bg-amber-900/90 border border-amber-600/70 text-amber-200 font-mono text-[10px] font-medium flex items-center justify-center gap-1.5 cursor-pointer shadow-sm transition-all"
+                        >
+                          <span>Set to earliest technically valid start:</span>
+                          <span className="font-bold underline">{currentValidation.suggestedStartTimes[idx]}s</span>
+                        </button>
+                      )}
                   </div>
                 )}
               </div>
