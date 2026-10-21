@@ -23,6 +23,9 @@ import {
   computeScenarioSummaryTable,
   computeReferenceDifferences,
   COMPARISON_PALETTE,
+  DEFAULT_STEP_J_STRATEGIES,
+  calculateStrategyTotalSaline,
+  formatStrategyActionSummary,
 } from '../src/services/biogearsApi.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -397,5 +400,156 @@ describe('6. Partial Failure Resilience', () => {
     assert.equal(table[1].status, 'error');
     assert.equal(table[1].error, 'Simulation Timeout (HTTP 504)');
     assert.equal(table[2].status, 'completed');
+  });
+});
+
+describe('7. Step J: Mixed-Intervention Scenario Comparison (Strategies A, B, C)', () => {
+  test('DEFAULT_STEP_J_STRATEGIES define valid Strategies A, B, and C', () => {
+    assert.equal(DEFAULT_STEP_J_STRATEGIES.length, 3);
+
+    // Strategy A: Fluid-only reference (100mL Saline @ 60s)
+    const [stratA, stratB, stratC] = DEFAULT_STEP_J_STRATEGIES;
+    assert.match(stratA.name, /Strategy A/i);
+    assert.equal(stratA.actions.length, 1);
+    assert.equal(stratA.actions[0].type, 'saline');
+    assert.equal(stratA.actions[0].volume_ml, 100);
+
+    const valA = validateSequentialSimulation({
+      actions: stratA.actions,
+      baselineObservationS: stratA.baseline_s,
+      postObservationS: stratA.post_s,
+    });
+    assert.equal(valA.valid, true);
+    assert.equal(valA.totalDuration, 240); // 60 + 120 + 60
+
+    // Strategy B: Sequential fluid & vasopressor (100mL Saline @ 60s -> Norepi @ 210s)
+    assert.match(stratB.name, /Strategy B/i);
+    assert.equal(stratB.actions.length, 2);
+    assert.equal(stratB.actions[0].type, 'saline');
+    assert.equal(stratB.actions[1].type, 'norepinephrine');
+
+    const valB = validateSequentialSimulation({
+      actions: stratB.actions,
+      baselineObservationS: stratB.baseline_s,
+      postObservationS: stratB.post_s,
+    });
+    assert.equal(valB.valid, true);
+    assert.equal(valB.totalDuration, 390); // 210 + 120 + 60
+
+    // Strategy C: Repeated fluid boluses & vasopressor (100mL @ 60s -> 100mL @ 210s -> Norepi @ 360s)
+    assert.match(stratC.name, /Strategy C/i);
+    assert.equal(stratC.actions.length, 3);
+    assert.equal(stratC.actions[0].type, 'saline');
+    assert.equal(stratC.actions[1].type, 'saline');
+    assert.equal(stratC.actions[2].type, 'norepinephrine');
+
+    const valC = validateSequentialSimulation({
+      actions: stratC.actions,
+      baselineObservationS: stratC.baseline_s,
+      postObservationS: stratC.post_s,
+    });
+    assert.equal(valC.valid, true);
+    assert.equal(valC.totalDuration, 540); // 360 + 120 + 60
+  });
+
+  test('calculateStrategyTotalSaline correctly isolates saline volume across mixed interventions', () => {
+    const [stratA, stratB, stratC] = DEFAULT_STEP_J_STRATEGIES;
+
+    // Strategy A uses 100mL saline
+    assert.equal(calculateStrategyTotalSaline(stratA.actions), 100);
+
+    // Strategy B uses 100mL saline + Norepinephrine (0mL saline added)
+    assert.equal(calculateStrategyTotalSaline(stratB.actions), 100);
+
+    // Strategy C uses 2x 100mL saline + Norepinephrine = 200mL saline
+    assert.equal(calculateStrategyTotalSaline(stratC.actions), 200);
+
+    // Edge cases: empty or undefined
+    assert.equal(calculateStrategyTotalSaline([]), 0);
+    assert.equal(calculateStrategyTotalSaline(null), 0);
+  });
+
+  test('formatStrategyActionSummary formats human-readable sequential intervention schedules', () => {
+    const [stratA, stratB, stratC] = DEFAULT_STEP_J_STRATEGIES;
+
+    assert.equal(formatStrategyActionSummary(stratA.actions), '100mL Saline @ 60s');
+    assert.equal(
+      formatStrategyActionSummary(stratB.actions),
+      '100mL Saline @ 60s → Norepi (14µg/mL) @ 210s'
+    );
+    assert.equal(
+      formatStrategyActionSummary(stratC.actions),
+      '100mL Saline @ 60s → 100mL Saline @ 210s → Norepi (14µg/mL) @ 360s'
+    );
+    assert.equal(formatStrategyActionSummary([]), 'No interventions');
+  });
+
+  test('alignComparisonTrajectories generates interventionMarkers for timeline chart rendering', () => {
+    const [stratA, stratB] = DEFAULT_STEP_J_STRATEGIES;
+
+    const mockScenarios = [
+      {
+        id: stratA.id,
+        name: stratA.name,
+        color: '#10b981',
+        actions: stratA.actions,
+        result: real1Bolus,
+      },
+      {
+        id: stratB.id,
+        name: stratB.name,
+        color: '#0284c7',
+        actions: stratB.actions,
+        result: real2Bolus,
+      },
+    ];
+
+    const aligned = alignComparisonTrajectories(mockScenarios);
+    assert.ok(Array.isArray(aligned.interventionMarkers));
+    assert.equal(aligned.interventionMarkers.length, 3); // 1 in A + 2 in B
+
+    // Marker 1: Strat A Saline
+    assert.equal(aligned.interventionMarkers[0].scenarioId, 'strategy_1');
+    assert.equal(aligned.interventionMarkers[0].type, 'saline');
+    assert.equal(aligned.interventionMarkers[0].time_s, 60);
+
+    // Marker 2: Strat B Saline
+    assert.equal(aligned.interventionMarkers[1].scenarioId, 'strategy_2');
+    assert.equal(aligned.interventionMarkers[1].type, 'saline');
+    assert.equal(aligned.interventionMarkers[1].time_s, 60);
+
+    // Marker 3: Strat B Norepinephrine
+    assert.equal(aligned.interventionMarkers[2].scenarioId, 'strategy_2');
+    assert.equal(aligned.interventionMarkers[2].type, 'norepinephrine');
+    assert.equal(aligned.interventionMarkers[2].time_s, 210);
+    assert.match(aligned.interventionMarkers[2].label, /Norepi/);
+  });
+
+  test('computeScenarioSummaryTable exposes mixed intervention flags and total saline volume', () => {
+    const [stratA, stratB, stratC] = DEFAULT_STEP_J_STRATEGIES;
+
+    const scenarios = [
+      { id: stratA.id, name: stratA.name, actions: stratA.actions, result: real1Bolus },
+      { id: stratB.id, name: stratB.name, actions: stratB.actions, result: real2Bolus },
+      { id: stratC.id, name: stratC.name, actions: stratC.actions, result: real3Bolus },
+    ];
+
+    const table = computeScenarioSummaryTable(scenarios);
+    assert.equal(table.length, 3);
+
+    // Strat A: fluid-only
+    assert.equal(table[0].hasNorepinephrine, false);
+    assert.equal(table[0].totalVolumeMl, 100);
+    assert.equal(table[0].numInterventions, 1);
+
+    // Strat B: mixed
+    assert.equal(table[1].hasNorepinephrine, true);
+    assert.equal(table[1].totalVolumeMl, 100);
+    assert.equal(table[1].numInterventions, 2);
+
+    // Strat C: repeated fluid + vasopressor
+    assert.equal(table[2].hasNorepinephrine, true);
+    assert.equal(table[2].totalVolumeMl, 200);
+    assert.equal(table[2].numInterventions, 3);
   });
 });

@@ -11,6 +11,10 @@ import {
   ReferenceArea,
   Legend,
 } from 'recharts';
+import {
+  calculateStrategyTotalSaline,
+  formatStrategyActionSummary,
+} from '../services/biogearsApi';
 
 /**
  * Custom Tooltip for Multi-Scenario Comparison Chart
@@ -129,8 +133,10 @@ export default function ScenarioComparisonChart({
   scenarios = [],
   commonInterval = [0, 0],
   maxDuration = 0,
+  interventionMarkers = [],
 }) {
   const [activeMetricId, setActiveMetricId] = useState('hr');
+  const [showInterventions, setShowInterventions] = useState(true);
   const activeMetric = useMemo(() => {
     return METRICS.find((m) => m.id === activeMetricId) || METRICS[0];
   }, [activeMetricId]);
@@ -173,21 +179,37 @@ export default function ScenarioComparisonChart({
           </p>
         </div>
 
-        {/* Tab Buttons for Vitals */}
-        <div className="flex flex-wrap items-center gap-1 bg-slate-950/80 p-1 rounded-lg border border-slate-800 text-xs">
-          {METRICS.map((metric) => (
+        {/* Action Controls: Marker Toggle & Tab Buttons for Vitals */}
+        <div className="flex flex-wrap items-center gap-2">
+          {interventionMarkers.length > 0 && (
             <button
-              key={metric.id}
-              onClick={() => setActiveMetricId(metric.id)}
-              className={`px-3 py-1 rounded-md transition-all font-medium cursor-pointer ${
-                activeMetricId === metric.id
-                  ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 shadow-sm'
-                  : 'text-slate-400 hover:text-slate-200'
+              onClick={() => setShowInterventions((prev) => !prev)}
+              className={`px-2.5 py-1 rounded-md text-xs font-medium border transition-all cursor-pointer ${
+                showInterventions
+                  ? 'bg-purple-950/60 text-purple-300 border-purple-800/60'
+                  : 'bg-slate-900 text-slate-400 border-slate-800'
               }`}
+              title="Toggle timeline intervention markers"
             >
-              {metric.abbr} ({metric.unit})
+              {showInterventions ? '✓ Markers' : 'Markers'} ({interventionMarkers.length})
             </button>
-          ))}
+          )}
+
+          <div className="flex flex-wrap items-center gap-1 bg-slate-950/80 p-1 rounded-lg border border-slate-800 text-xs">
+            {METRICS.map((metric) => (
+              <button
+                key={metric.id}
+                onClick={() => setActiveMetricId(metric.id)}
+                className={`px-3 py-1 rounded-md transition-all font-medium cursor-pointer ${
+                  activeMetricId === metric.id
+                    ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 shadow-sm'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                {metric.abbr} ({metric.unit})
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 
@@ -283,6 +305,25 @@ export default function ScenarioComparisonChart({
               />
             )}
 
+            {/* Intervention Markers */}
+            {showInterventions &&
+              interventionMarkers.map((marker, mIdx) => (
+                <ReferenceLine
+                  key={`${marker.scenarioId}_act${marker.actionIndex}_${mIdx}`}
+                  x={marker.time_s}
+                  stroke={marker.color}
+                  strokeDasharray={marker.type === 'norepinephrine' ? '5 3' : '2 2'}
+                  strokeWidth={1.5}
+                  label={{
+                    value: marker.label,
+                    position: 'insideTopLeft',
+                    fill: marker.color,
+                    fontSize: 9,
+                    offset: 4,
+                  }}
+                />
+              ))}
+
             {/* Scenario Trajectory Lines */}
             {scenarios.map((scenario) => (
               <Line
@@ -303,24 +344,33 @@ export default function ScenarioComparisonChart({
 
       {/* Legend & Strategy Cards Indicator */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-2.5 pt-2 border-t border-slate-800/80">
-        {scenarios.map((s) => (
-          <div
-            key={s.id}
-            className="flex items-center gap-2.5 px-3 py-2 rounded-lg bg-slate-950/70 border text-xs"
-            style={{ borderColor: s.color ? `${s.color}40` : 'rgba(148, 163, 184, 0.2)' }}
-          >
-            <span
-              className="w-3 h-3 rounded-full flex-shrink-0"
-              style={{ backgroundColor: s.color }}
-            />
-            <div className="min-w-0 flex-1">
-              <p className="font-semibold text-slate-200 truncate">{s.name}</p>
-              <p className="text-[10px] text-slate-400 font-mono">
-                Duration: {s.maxTime}s • {s.actions?.length ?? 1} Bolus{s.actions?.length > 1 ? 'es' : ''}
-              </p>
+        {scenarios.map((s) => {
+          const totalSaline = calculateStrategyTotalSaline(s.actions);
+          const schedule = formatStrategyActionSummary(s.actions);
+          const simDur = s.maxTime || s.simulatedDurationS || s.result?.metadata?.simulated_duration_s || '—';
+
+          return (
+            <div
+              key={s.id}
+              className="flex items-center gap-2.5 px-3 py-2 rounded-lg bg-slate-950/70 border text-xs"
+              style={{ borderColor: s.color ? `${s.color}40` : 'rgba(148, 163, 184, 0.2)' }}
+            >
+              <span
+                className="w-3 h-3 rounded-full flex-shrink-0"
+                style={{ backgroundColor: s.color }}
+              />
+              <div className="min-w-0 flex-1">
+                <p className="font-semibold text-slate-200 truncate">{s.name}</p>
+                <p className="text-[10px] text-slate-400 font-mono">
+                  Duration: {simDur}s • Total Saline: <span className="text-cyan-300 font-semibold">{totalSaline}mL</span>
+                </p>
+                <p className="text-[9px] text-slate-500 font-mono truncate" title={schedule}>
+                  {schedule}
+                </p>
+              </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );

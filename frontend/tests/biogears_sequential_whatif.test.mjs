@@ -29,6 +29,8 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   SUPPORTED_SALINE_VOLUMES,
   calculateDeliveryDuration,
@@ -40,6 +42,10 @@ import {
   computeConsecutiveMilestoneDeltas,
   executeSequentialWhatIf,
 } from '../src/services/biogearsApi.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const FIXTURES_DIR = path.join(__dirname, 'fixtures');
 
 describe('1. Active Saline Delivery Duration Derivation', () => {
   test('Calculates exact delivery duration at verified 50 mL/min rate', () => {
@@ -495,7 +501,7 @@ describe('6. Multi-Bolus Simulation API Execution', () => {
 
 describe('7. Verification with Real BioGears 1-, 2-, and 3-Bolus Responses', () => {
   test('Processes real 1-bolus BioGears response fixture correctly', () => {
-    const raw = fs.readFileSync('tests/fixtures/real_1bolus_response.json', 'utf8');
+    const raw = fs.readFileSync(path.join(FIXTURES_DIR, 'real_1bolus_response.json'), 'utf8');
     const resp = JSON.parse(raw);
 
     assert.equal(resp.metadata.patient_file, 'StandardMale.xml');
@@ -516,7 +522,7 @@ describe('7. Verification with Real BioGears 1-, 2-, and 3-Bolus Responses', () 
   });
 
   test('Processes real 2-bolus BioGears response fixture correctly', () => {
-    const raw = fs.readFileSync('tests/fixtures/real_2bolus_response.json', 'utf8');
+    const raw = fs.readFileSync(path.join(FIXTURES_DIR, 'real_2bolus_response.json'), 'utf8');
     const resp = JSON.parse(raw);
 
     assert.equal(resp.metadata.actions.length, 2);
@@ -536,7 +542,7 @@ describe('7. Verification with Real BioGears 1-, 2-, and 3-Bolus Responses', () 
   });
 
   test('Processes real 3-bolus BioGears response fixture correctly', () => {
-    const raw = fs.readFileSync('tests/fixtures/real_3bolus_response.json', 'utf8');
+    const raw = fs.readFileSync(path.join(FIXTURES_DIR, 'real_3bolus_response.json'), 'utf8');
     const resp = JSON.parse(raw);
 
     assert.equal(resp.metadata.actions.length, 3);
@@ -557,7 +563,7 @@ describe('7. Verification with Real BioGears 1-, 2-, and 3-Bolus Responses', () 
   });
 
   test('Validates fresh live 2-bolus execution fixture (100mL @ 60s, 250mL @ 210s)', () => {
-    const raw = fs.readFileSync('tests/fixtures/fresh_2bolus_response.json', 'utf8');
+    const raw = fs.readFileSync(path.join(FIXTURES_DIR, 'fresh_2bolus_response.json'), 'utf8');
     const resp = JSON.parse(raw);
 
     assert.equal(resp.metadata.scenario_name, 'SeqSaline_2actions_100mL_250mL_Fresh');
@@ -594,7 +600,7 @@ describe('7. Verification with Real BioGears 1-, 2-, and 3-Bolus Responses', () 
   });
 
   test('Validates fresh live 3-bolus execution fixture (100mL @ 60s, 100mL @ 195s, 100mL @ 330s)', () => {
-    const raw = fs.readFileSync('tests/fixtures/fresh_3bolus_response.json', 'utf8');
+    const raw = fs.readFileSync(path.join(FIXTURES_DIR, 'fresh_3bolus_response.json'), 'utf8');
     const resp = JSON.parse(raw);
 
     assert.equal(resp.metadata.scenario_name, 'SeqSaline_3actions_100mL_100mL_100mL_Fresh');

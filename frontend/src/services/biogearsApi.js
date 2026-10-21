@@ -725,13 +725,33 @@ export function alignComparisonTrajectories(scenarios = [], toleranceSeconds = 2
       minTime,
       maxTime,
       dataPoints: dps,
-      actions: s.result.metadata?.actions || s.actions || [],
+      actions: (s.actions && s.actions.length > 0) ? s.actions : (s.result.metadata?.actions || []),
     };
   });
 
   const commonMin = Math.max(...scenariosMeta.map((m) => m.minTime));
   const commonMax = Math.min(...scenariosMeta.map((m) => m.maxTime));
   const overallMax = Math.max(...scenariosMeta.map((m) => m.maxTime));
+
+  // Extract intervention markers for timeline visualization
+  const interventionMarkers = [];
+  scenariosMeta.forEach((meta) => {
+    (meta.actions || []).forEach((act, actIdx) => {
+      const startTime = Number(act.start_time_s ?? act.startTimeS ?? 0);
+      const isNorepi = act.type === 'norepinephrine' || act.substance === 'Norepinephrine';
+      const vol = act.bag_volume_ml ?? act.volume_ml;
+      const label = isNorepi ? 'Norepi (14µg/mL)' : `${vol || 100}mL Saline`;
+      interventionMarkers.push({
+        scenarioId: meta.id,
+        scenarioName: meta.name,
+        color: meta.color,
+        time_s: startTime,
+        type: isNorepi ? 'norepinephrine' : 'saline',
+        label: `${meta.name}: ${label}`,
+        actionIndex: actIdx,
+      });
+    });
+  });
 
   const timeSet = new Set();
   scenariosMeta.forEach((m) => {
@@ -795,6 +815,7 @@ export function alignComparisonTrajectories(scenarios = [], toleranceSeconds = 2
     commonInterval: [commonMin, commonMax],
     maxDuration: overallMax,
     scenariosMeta,
+    interventionMarkers,
   };
 }
 
@@ -819,7 +840,7 @@ export function computeScenarioSummaryTable(scenarios = []) {
       ? meta.wall_clock_seconds
       : (typeof s.wallClockSeconds === 'number' ? s.wallClockSeconds : null);
 
-    const actions = meta?.actions || s.actions || [];
+    const actions = (s.actions && s.actions.length > 0) ? s.actions : (meta?.actions || []);
     const numInterventions = actions.length;
     const totalVolumeMl = actions.reduce(
       (sum, a) => sum + (a.type === 'norepinephrine' || a.substance === 'Norepinephrine' ? 0 : Number(a.bag_volume_ml ?? a.volume_ml ?? 0)),
@@ -975,3 +996,87 @@ export function computeReferenceDifferences(summaryRows = [], referenceId) {
   };
 }
 
+/**
+ * Step J: Standard default experimental comparison strategies
+ * Strategy A: Fluid-only reference (100mL Saline @ 60s)
+ * Strategy B: Sequential fluid & vasopressor (100mL Saline @ 60s -> Norepinephrine @ 210s)
+ * Strategy C: Repeated fluid boluses & vasopressor (100mL Saline @ 60s -> 100mL Saline @ 210s -> Norepinephrine @ 360s)
+ */
+export const DEFAULT_STEP_J_STRATEGIES = [
+  {
+    id: 'strategy_1',
+    name: 'Strategy A: Fluid-Only Reference',
+    color: COMPARISON_PALETTE[0].color,
+    baseline_s: 60,
+    post_s: 60,
+    actions: [
+      { id: 'act_a1', type: 'saline', volume_ml: 100, start_time_s: 60 },
+    ],
+  },
+  {
+    id: 'strategy_2',
+    name: 'Strategy B: Sequential Fluid & Vasopressor',
+    color: COMPARISON_PALETTE[1].color,
+    baseline_s: 60,
+    post_s: 60,
+    actions: [
+      { id: 'act_b1', type: 'saline', volume_ml: 100, start_time_s: 60 },
+      {
+        id: 'act_b2',
+        type: 'norepinephrine',
+        concentration_ug_ml: 14.0,
+        rate_ml_per_min: 1.0,
+        duration_s: 120,
+        start_time_s: 210,
+      },
+    ],
+  },
+  {
+    id: 'strategy_3',
+    name: 'Strategy C: Repeated Fluid & Vasopressor',
+    color: COMPARISON_PALETTE[2].color,
+    baseline_s: 60,
+    post_s: 60,
+    actions: [
+      { id: 'act_c1', type: 'saline', volume_ml: 100, start_time_s: 60 },
+      { id: 'act_c2', type: 'saline', volume_ml: 100, start_time_s: 210 },
+      {
+        id: 'act_c3',
+        type: 'norepinephrine',
+        concentration_ug_ml: 14.0,
+        rate_ml_per_min: 1.0,
+        duration_s: 120,
+        start_time_s: 360,
+      },
+    ],
+  },
+];
+
+/**
+ * Calculates total saline volume administered across all actions in a strategy
+ */
+export function calculateStrategyTotalSaline(actions = []) {
+  if (!Array.isArray(actions)) return 0;
+  return actions.reduce((sum, act) => {
+    const isSaline = act.type === 'saline' || !act.type;
+    return sum + (isSaline ? Number(act.volume_ml ?? act.bag_volume_ml ?? 0) : 0);
+  }, 0);
+}
+
+/**
+ * Formats a concise summary of a strategy's action schedule
+ */
+export function formatStrategyActionSummary(actions = []) {
+  if (!Array.isArray(actions) || actions.length === 0) return 'No interventions';
+  return actions
+    .map((act) => {
+      const isNorepi = act.type === 'norepinephrine' || act.substance === 'Norepinephrine';
+      const start = act.start_time_s ?? act.startTimeS ?? 0;
+      if (isNorepi) {
+        return `Norepi (14µg/mL) @ ${start}s`;
+      }
+      const vol = act.volume_ml ?? act.bag_volume_ml ?? 100;
+      return `${vol}mL Saline @ ${start}s`;
+    })
+    .join(' → ');
+}

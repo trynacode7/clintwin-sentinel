@@ -12,46 +12,17 @@ import {
   alignComparisonTrajectories,
   computeScenarioSummaryTable,
   computeReferenceDifferences,
+  DEFAULT_STEP_J_STRATEGIES,
+  calculateStrategyTotalSaline,
+  formatStrategyActionSummary,
+  VERIFIED_NOREPINEPHRINE_CONCENTRATION_UG_ML,
+  VERIFIED_NOREPINEPHRINE_RATE_ML_PER_MIN,
+  VERIFIED_NOREPINEPHRINE_DURATION_S,
 } from '../services/biogearsApi';
 import ScenarioComparisonChart from './ScenarioComparisonChart';
 
-// Default starter presets for instant comparison
-const DEFAULT_STRATEGIES = [
-  {
-    id: 'strategy_1',
-    name: 'Strategy A: Conservative 100mL',
-    color: COMPARISON_PALETTE[0].color,
-    baseline_s: 60,
-    post_s: 60,
-    actions: [
-      { id: 'b1', volume_ml: 100, start_time_s: 60 },
-    ],
-  },
-  {
-    id: 'strategy_2',
-    name: 'Strategy B: Moderate 2x250mL',
-    color: COMPARISON_PALETTE[1].color,
-    baseline_s: 60,
-    post_s: 60,
-    actions: [
-      { id: 'b1', volume_ml: 250, start_time_s: 60 },
-      { id: 'b2', volume_ml: 250, start_time_s: 390 }, // 60 + 300s delivery + 30s pause
-    ],
-  },
-  {
-    id: 'strategy_3',
-    name: 'Strategy C: Single 500mL Bolus',
-    color: COMPARISON_PALETTE[2].color,
-    baseline_s: 60,
-    post_s: 60,
-    actions: [
-      { id: 'b1', volume_ml: 500, start_time_s: 60 },
-    ],
-  },
-];
-
 export default function ScenarioComparisonWorkspace() {
-  const [strategies, setStrategies] = useState(DEFAULT_STRATEGIES);
+  const [strategies, setStrategies] = useState(DEFAULT_STEP_J_STRATEGIES);
   const [running, setRunning] = useState(false);
   const [activeRunningIndex, setActiveRunningIndex] = useState(null);
   const [currentElapsedSec, setCurrentElapsedSec] = useState(0);
@@ -151,11 +122,11 @@ export default function ScenarioComparisonWorkspace() {
       ...prev,
       {
         id: newId,
-        name: `Strategy ${letter}: Custom ${letter}`,
+        name: `Strategy ${letter}: Custom Strategy`,
         color: nextColor,
         baseline_s: 60,
         post_s: 60,
-        actions: [{ id: `b_${Date.now()}`, volume_ml: 250, start_time_s: 60 }],
+        actions: [{ id: `act_${Date.now()}`, type: 'saline', volume_ml: 100, start_time_s: 60 }],
       },
     ]);
   };
@@ -176,7 +147,7 @@ export default function ScenarioComparisonWorkspace() {
 
   const handleResetPresets = () => {
     if (running) return;
-    setStrategies(DEFAULT_STRATEGIES);
+    setStrategies(DEFAULT_STEP_J_STRATEGIES);
     setResultsMap({});
     setReferenceId('strategy_1');
     setGeneralError(null);
@@ -188,26 +159,42 @@ export default function ScenarioComparisonWorkspace() {
     );
   };
 
-  const handleAddBolusToAction = (strategyId) => {
+  const handleAddIntervention = (strategyId, type = 'saline') => {
     setStrategies((prev) =>
       prev.map((strat) => {
         if (strat.id !== strategyId || strat.actions.length >= 3) return strat;
         const lastAction = strat.actions[strat.actions.length - 1];
-        const lastEnd = Number(lastAction.start_time_s) + calculateDeliveryDuration(lastAction.volume_ml);
-        const newStart = Math.max(lastEnd, lastEnd + 15);
+        const lastDuration = (lastAction?.type === 'norepinephrine' || lastAction?.substance === 'Norepinephrine')
+          ? VERIFIED_NOREPINEPHRINE_DURATION_S
+          : calculateDeliveryDuration(lastAction?.volume_ml || 100);
+        const lastEnd = Number(lastAction?.start_time_s || 60) + lastDuration;
+        const newStart = Math.max(lastEnd, lastEnd + 30);
+
+        const newAction = type === 'norepinephrine'
+          ? {
+              id: `act_${Date.now()}`,
+              type: 'norepinephrine',
+              concentration_ug_ml: VERIFIED_NOREPINEPHRINE_CONCENTRATION_UG_ML,
+              rate_ml_per_min: VERIFIED_NOREPINEPHRINE_RATE_ML_PER_MIN,
+              duration_s: VERIFIED_NOREPINEPHRINE_DURATION_S,
+              start_time_s: newStart,
+            }
+          : {
+              id: `act_${Date.now()}`,
+              type: 'saline',
+              volume_ml: 100,
+              start_time_s: newStart,
+            };
 
         return {
           ...strat,
-          actions: [
-            ...strat.actions,
-            { id: `b_${Date.now()}`, volume_ml: 100, start_time_s: newStart },
-          ],
+          actions: [...strat.actions, newAction],
         };
       })
     );
   };
 
-  const handleRemoveBolusFromAction = (strategyId, actionIndex) => {
+  const handleRemoveIntervention = (strategyId, actionIndex) => {
     setStrategies((prev) =>
       prev.map((strat) => {
         if (strat.id !== strategyId || strat.actions.length <= 1) return strat;
@@ -217,15 +204,49 @@ export default function ScenarioComparisonWorkspace() {
     );
   };
 
-  const handleUpdateBolus = (strategyId, actionIndex, field, value) => {
+  const handleMoveIntervention = (strategyId, actionIndex, direction) => {
+    setStrategies((prev) =>
+      prev.map((strat) => {
+        if (strat.id !== strategyId) return strat;
+        const targetIndex = actionIndex + direction;
+        if (targetIndex < 0 || targetIndex >= strat.actions.length) return strat;
+        const newActions = [...strat.actions];
+        const temp = newActions[actionIndex];
+        newActions[actionIndex] = newActions[targetIndex];
+        newActions[targetIndex] = temp;
+        return { ...strat, actions: newActions };
+      })
+    );
+  };
+
+  const handleUpdateIntervention = (strategyId, actionIndex, field, value) => {
     setStrategies((prev) =>
       prev.map((strat) => {
         if (strat.id !== strategyId) return strat;
         const newActions = [...strat.actions];
-        newActions[actionIndex] = {
-          ...newActions[actionIndex],
-          [field]: field === 'volume_ml' || field === 'start_time_s' ? Number(value) : value,
-        };
+        const current = { ...newActions[actionIndex] };
+
+        if (field === 'type') {
+          if (value === 'norepinephrine') {
+            current.type = 'norepinephrine';
+            current.concentration_ug_ml = VERIFIED_NOREPINEPHRINE_CONCENTRATION_UG_ML;
+            current.rate_ml_per_min = VERIFIED_NOREPINEPHRINE_RATE_ML_PER_MIN;
+            current.duration_s = VERIFIED_NOREPINEPHRINE_DURATION_S;
+            delete current.volume_ml;
+          } else {
+            current.type = 'saline';
+            current.volume_ml = 100;
+            delete current.concentration_ug_ml;
+            delete current.rate_ml_per_min;
+            delete current.duration_s;
+          }
+        } else if (field === 'volume_ml' || field === 'start_time_s') {
+          current[field] = Number(value);
+        } else {
+          current[field] = value;
+        }
+
+        newActions[actionIndex] = current;
         return { ...strat, actions: newActions };
       })
     );
@@ -330,11 +351,11 @@ export default function ScenarioComparisonWorkspace() {
               <h2 className="text-base font-bold text-white tracking-tight flex items-center gap-2">
                 BioGears Scenario Comparison Workspace
                 <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-cyan-950/70 text-cyan-300 border border-cyan-800/40 uppercase font-semibold">
-                  Step H
+                  Step J
                 </span>
               </h2>
               <p className="text-xs text-slate-400 mt-0.5">
-                Configure, execute, and compare up to three sequential saline strategies side-by-side using real BioGears physiological trajectory data.
+                Configure, execute, and compare up to three sequential intervention strategies (Saline & Norepinephrine) side-by-side using real BioGears physiological trajectory data.
               </p>
             </div>
           </div>
@@ -345,7 +366,7 @@ export default function ScenarioComparisonWorkspace() {
             onClick={handleResetPresets}
             disabled={running}
             className="px-3 py-1.5 rounded-lg border border-slate-700 bg-slate-800/60 hover:bg-slate-700/60 text-slate-300 text-xs font-medium transition-all disabled:opacity-50 cursor-pointer"
-            title="Load standard 100mL vs 2x250mL vs 500mL presets"
+            title="Load default Strategies A (Fluid-only), B (Sequential), and C (Repeated boluses)"
           >
             Reset Presets
           </button>
@@ -365,7 +386,7 @@ export default function ScenarioComparisonWorkspace() {
           <span>{generalError}</span>
           <button
             onClick={() => setGeneralError(null)}
-            className="text-rose-400 hover:text-rose-200 font-bold ml-2"
+            className="text-rose-400 hover:text-rose-200 font-bold ml-2 cursor-pointer"
           >
             ✕
           </button>
@@ -378,6 +399,8 @@ export default function ScenarioComparisonWorkspace() {
           const validation = strategyValidations.find((v) => v.id === strat.id);
           const exec = resultsMap[strat.id];
           const isCurrentRunning = running && activeRunningIndex === idx;
+          const totalSaline = calculateStrategyTotalSaline(strat.actions);
+          const scheduleSummary = formatStrategyActionSummary(strat.actions);
 
           return (
             <div
@@ -390,7 +413,7 @@ export default function ScenarioComparisonWorkspace() {
             >
               <div>
                 {/* Card Header: Color chip, editable title, remove button */}
-                <div className="flex items-center justify-between gap-2 mb-3 pb-2 border-b border-slate-800">
+                <div className="flex items-center justify-between gap-2 mb-2 pb-2 border-b border-slate-800">
                   <div className="flex items-center gap-2 min-w-0 flex-1">
                     <span
                       className="w-3.5 h-3.5 rounded-md flex-shrink-0"
@@ -409,7 +432,7 @@ export default function ScenarioComparisonWorkspace() {
                     <button
                       onClick={() => handleRemoveStrategy(strat.id)}
                       disabled={running}
-                      className="text-slate-500 hover:text-rose-400 text-xs px-1.5 py-0.5 rounded transition-all disabled:opacity-40"
+                      className="text-slate-500 hover:text-rose-400 text-xs px-1.5 py-0.5 rounded transition-all disabled:opacity-40 cursor-pointer"
                       title="Remove strategy"
                     >
                       ✕
@@ -417,42 +440,105 @@ export default function ScenarioComparisonWorkspace() {
                   )}
                 </div>
 
-                {/* Boluses Configuration List */}
+                {/* Experimental Control Badge: Total Saline & Schedule Summary */}
+                <div className="mb-3 space-y-1">
+                  <div className="flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg bg-slate-950/70 border border-slate-800 text-[11px]">
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-slate-400">Total Saline:</span>
+                      <span className="font-mono font-bold text-cyan-300">
+                        {totalSaline} mL
+                      </span>
+                    </div>
+                    <span className="text-[10px] text-slate-400 font-mono">
+                      {strat.actions.some((a) => a.type === 'norepinephrine') ? 'Fluid + Vasopressor' : 'Fluid-Only'}
+                    </span>
+                  </div>
+                  <div className="text-[10px] text-slate-400 font-mono px-1 truncate" title={scheduleSummary}>
+                    Schedule: <span className="text-slate-300">{scheduleSummary}</span>
+                  </div>
+                </div>
+
+                {/* Sequential Interventions Configuration List */}
                 <div className="space-y-2.5 mb-3">
                   <div className="flex items-center justify-between text-[11px] text-slate-400 font-medium">
-                    <span>Sequential Boluses ({strat.actions.length}/3)</span>
-                    <button
-                      onClick={() => handleAddBolusToAction(strat.id)}
-                      disabled={strat.actions.length >= 3 || running}
-                      className="text-cyan-400 hover:text-cyan-300 disabled:opacity-40 disabled:cursor-not-allowed font-medium text-[10px]"
-                    >
-                      + Add Bolus
-                    </button>
+                    <span>Sequential Actions ({strat.actions.length}/3)</span>
+                    <div className="flex items-center gap-1">
+                      <button
+                        onClick={() => handleAddIntervention(strat.id, 'saline')}
+                        disabled={strat.actions.length >= 3 || running}
+                        className="text-cyan-400 hover:text-cyan-300 disabled:opacity-40 disabled:cursor-not-allowed font-medium text-[10px] px-1.5 py-0.5 rounded bg-cyan-950/50 border border-cyan-800/50 cursor-pointer"
+                        title="Add Saline Bolus"
+                      >
+                        + Saline
+                      </button>
+                      <button
+                        onClick={() => handleAddIntervention(strat.id, 'norepinephrine')}
+                        disabled={strat.actions.length >= 3 || running}
+                        className="text-purple-400 hover:text-purple-300 disabled:opacity-40 disabled:cursor-not-allowed font-medium text-[10px] px-1.5 py-0.5 rounded bg-purple-950/50 border border-purple-800/50 cursor-pointer"
+                        title="Add Norepinephrine Infusion"
+                      >
+                        + Norepi
+                      </button>
+                    </div>
                   </div>
 
-                  {strat.actions.map((act, bIdx) => {
-                    const dur = calculateDeliveryDuration(act.volume_ml);
-                    const bError = validation?.actionErrors?.[bIdx];
+                  {strat.actions.map((act, aIdx) => {
+                    const isNorepi = act.type === 'norepinephrine';
+                    const dur = isNorepi
+                      ? VERIFIED_NOREPINEPHRINE_DURATION_S
+                      : calculateDeliveryDuration(act.volume_ml || 100);
+                    const aError = validation?.actionErrors?.[aIdx];
 
                     return (
                       <div
-                        key={act.id || bIdx}
+                        key={act.id || aIdx}
                         className="p-2.5 rounded-lg bg-slate-950/70 border border-slate-800/90 space-y-2"
                       >
                         <div className="flex items-center justify-between text-[11px]">
-                          <span className="font-semibold text-slate-300">
-                            Bolus #{bIdx + 1}
-                          </span>
-                          <div className="flex items-center gap-2">
-                            <span className="font-mono text-[10px] text-slate-500">
-                              Duration: {dur}s ({dur / 60}m)
+                          <div className="flex items-center gap-1.5">
+                            <span className="font-semibold text-slate-300">
+                              #{aIdx + 1}
                             </span>
+                            <span
+                              className={`text-[9px] px-1.5 py-0.5 rounded font-medium ${
+                                isNorepi
+                                  ? 'bg-purple-950/80 text-purple-300 border border-purple-800/50'
+                                  : 'bg-cyan-950/80 text-cyan-300 border border-cyan-800/50'
+                              }`}
+                            >
+                              {isNorepi ? 'Norepinephrine' : 'Saline Bolus'}
+                            </span>
+                          </div>
+
+                          <div className="flex items-center gap-1.5">
+                            <span className="font-mono text-[10px] text-slate-500">
+                              {dur}s ({dur / 60}m)
+                            </span>
+
+                            {/* Reordering controls */}
+                            <button
+                              onClick={() => handleMoveIntervention(strat.id, aIdx, -1)}
+                              disabled={aIdx === 0 || running}
+                              className="text-slate-500 hover:text-slate-200 disabled:opacity-20 text-[10px] px-1 py-0.5 rounded hover:bg-slate-800 cursor-pointer"
+                              title="Move action earlier in sequence"
+                            >
+                              ↑
+                            </button>
+                            <button
+                              onClick={() => handleMoveIntervention(strat.id, aIdx, 1)}
+                              disabled={aIdx === strat.actions.length - 1 || running}
+                              className="text-slate-500 hover:text-slate-200 disabled:opacity-20 text-[10px] px-1 py-0.5 rounded hover:bg-slate-800 cursor-pointer"
+                              title="Move action later in sequence"
+                            >
+                              ↓
+                            </button>
+
                             {strat.actions.length > 1 && (
                               <button
-                                onClick={() => handleRemoveBolusFromAction(strat.id, bIdx)}
+                                onClick={() => handleRemoveIntervention(strat.id, aIdx)}
                                 disabled={running}
-                                className="text-slate-500 hover:text-rose-400 text-[10px]"
-                                title="Remove bolus"
+                                className="text-slate-500 hover:text-rose-400 text-[10px] px-1 py-0.5 cursor-pointer"
+                                title="Remove intervention"
                               >
                                 ✕
                               </button>
@@ -460,24 +546,22 @@ export default function ScenarioComparisonWorkspace() {
                           </div>
                         </div>
 
+                        {/* Action Type & Start Time */}
                         <div className="grid grid-cols-2 gap-2 text-xs">
                           <div>
                             <label className="block text-[10px] text-slate-400 mb-1">
-                              Volume
+                              Intervention Type
                             </label>
                             <select
-                              value={act.volume_ml}
+                              value={act.type || 'saline'}
                               onChange={(e) =>
-                                handleUpdateBolus(strat.id, bIdx, 'volume_ml', e.target.value)
+                                handleUpdateIntervention(strat.id, aIdx, 'type', e.target.value)
                               }
                               disabled={running}
                               className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-slate-200 text-xs focus:border-cyan-500 outline-none"
                             >
-                              {SUPPORTED_SALINE_VOLUMES.map((v) => (
-                                <option key={v} value={v}>
-                                  {v} mL
-                                </option>
-                              ))}
+                              <option value="saline">Normal Saline</option>
+                              <option value="norepinephrine">Norepinephrine</option>
                             </select>
                           </div>
 
@@ -491,7 +575,7 @@ export default function ScenarioComparisonWorkspace() {
                               max="1800"
                               value={act.start_time_s}
                               onChange={(e) =>
-                                handleUpdateBolus(strat.id, bIdx, 'start_time_s', e.target.value)
+                                handleUpdateIntervention(strat.id, aIdx, 'start_time_s', e.target.value)
                               }
                               disabled={running}
                               className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-slate-200 text-xs font-mono focus:border-cyan-500 outline-none"
@@ -499,9 +583,37 @@ export default function ScenarioComparisonWorkspace() {
                           </div>
                         </div>
 
-                        {bError && (
+                        {/* Dose / Volume Parameters */}
+                        {isNorepi ? (
+                          <div className="p-1.5 rounded bg-purple-950/30 border border-purple-900/40 text-[10px] text-purple-300 font-mono flex items-center justify-between">
+                            <span>Locked Verified Dose:</span>
+                            <span>14 µg/mL @ 1 mL/min (120s)</span>
+                          </div>
+                        ) : (
+                          <div>
+                            <label className="block text-[10px] text-slate-400 mb-1">
+                              Bolus Volume (at 50 mL/min)
+                            </label>
+                            <select
+                              value={act.volume_ml || 100}
+                              onChange={(e) =>
+                                handleUpdateIntervention(strat.id, aIdx, 'volume_ml', e.target.value)
+                              }
+                              disabled={running}
+                              className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-slate-200 text-xs focus:border-cyan-500 outline-none"
+                            >
+                              {SUPPORTED_SALINE_VOLUMES.map((v) => (
+                                <option key={v} value={v}>
+                                  {v} mL
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                        )}
+
+                        {aError && (
                           <p className="text-[10px] text-rose-400 mt-1 leading-tight">
-                            {bError}
+                            {aError}
                           </p>
                         )}
                       </div>
@@ -612,6 +724,7 @@ export default function ScenarioComparisonWorkspace() {
           scenarios={completedScenariosForCharts}
           commonInterval={alignedTrajectories.commonInterval}
           maxDuration={alignedTrajectories.maxDuration}
+          interventionMarkers={alignedTrajectories.interventionMarkers}
         />
       )}
 
@@ -636,8 +749,8 @@ export default function ScenarioComparisonWorkspace() {
             <thead>
               <tr className="border-b border-slate-800 text-slate-400 font-semibold bg-slate-950/60 text-[11px]">
                 <th className="py-2.5 px-3">Strategy</th>
-                <th className="py-2.5 px-3">Boluses</th>
-                <th className="py-2.5 px-3">Total Vol</th>
+                <th className="py-2.5 px-3">Interventions</th>
+                <th className="py-2.5 px-3">Total Saline</th>
                 <th className="py-2.5 px-3">Sim Duration</th>
                 <th className="py-2.5 px-3">Status / Source</th>
                 <th className="py-2.5 px-3 text-right">Heart Rate (bpm)</th>
@@ -669,9 +782,12 @@ export default function ScenarioComparisonWorkspace() {
                       </div>
                     </td>
 
-                    {/* Number of Boluses */}
+                    {/* Number of Interventions */}
                     <td className="py-2.5 px-3 text-slate-300">
-                      {row.numInterventions} bolus{row.numInterventions > 1 ? 'es' : ''}
+                      <span>{row.numInterventions} action{row.numInterventions > 1 ? 's' : ''}</span>
+                      <span className="text-[10px] text-slate-500 block font-sans">
+                        {row.hasNorepinephrine ? 'Saline + Norepi' : 'Fluid-only'}
+                      </span>
                     </td>
 
                     {/* Total Volume */}
