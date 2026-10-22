@@ -25,10 +25,19 @@ export const MAX_SALINE_RATE_ML_PER_MIN = 100.0;
 export const DEFAULT_SALINE_VOLUME_ML = 250.0;
 export const DEFAULT_SALINE_RATE_ML_PER_MIN = 50.0;
 
-// Verified Norepinephrine Infusion constants
-export const VERIFIED_NOREPINEPHRINE_CONCENTRATION_UG_ML = 14.0;
+// Configurable Norepinephrine Infusion constants (Step H)
+export const MIN_NOREPINEPHRINE_RATE_ML_PER_MIN = 0.1;
+export const MAX_NOREPINEPHRINE_RATE_ML_PER_MIN = 5.0;
+export const DEFAULT_NOREPINEPHRINE_RATE_ML_PER_MIN = 1.0;
 export const VERIFIED_NOREPINEPHRINE_RATE_ML_PER_MIN = 1.0;
+
+export const MIN_NOREPINEPHRINE_DURATION_S = 10.0;
+export const MAX_NOREPINEPHRINE_DURATION_S = 600.0;
+export const DEFAULT_NOREPINEPHRINE_DURATION_S = 120.0;
 export const VERIFIED_NOREPINEPHRINE_DURATION_S = 120.0;
+
+export const DEFAULT_NOREPINEPHRINE_CONCENTRATION_UG_ML = 14.0;
+export const VERIFIED_NOREPINEPHRINE_CONCENTRATION_UG_ML = 14.0;
 export const SUPPORTED_INTERVENTION_TYPES = ['saline', 'norepinephrine'];
 
 /**
@@ -172,27 +181,44 @@ export function validateSequentialSimulation({
       }
       deliveryDuration = calculateDeliveryDuration(vol, rate);
     } else if (actionType === 'norepinephrine') {
-      const conc = Number(act.concentration_ug_ml ?? act.concentrationUgMl ?? VERIFIED_NOREPINEPHRINE_CONCENTRATION_UG_ML);
-      const rate = Number(act.rate_ml_per_min ?? act.rateMlPerMin ?? VERIFIED_NOREPINEPHRINE_RATE_ML_PER_MIN);
-      const dur = Number(act.duration_s ?? act.durationS ?? VERIFIED_NOREPINEPHRINE_DURATION_S);
+      const conc = Number(act.concentration_ug_ml ?? act.concentrationUgMl ?? DEFAULT_NOREPINEPHRINE_CONCENTRATION_UG_ML);
+      const rate = Number(act.rate_ml_per_min ?? act.rateMlPerMin ?? DEFAULT_NOREPINEPHRINE_RATE_ML_PER_MIN);
+      const dur = Number(act.duration_s ?? act.durationS ?? DEFAULT_NOREPINEPHRINE_DURATION_S);
+      const isParam = Boolean(parameterized);
 
-      if (conc !== VERIFIED_NOREPINEPHRINE_CONCENTRATION_UG_ML) {
-        const msg = `Infusion ${i + 1}: Unsupported concentration (${conc} ug/mL). Supported: ${VERIFIED_NOREPINEPHRINE_CONCENTRATION_UG_ML} ug/mL.`;
+      if (conc !== DEFAULT_NOREPINEPHRINE_CONCENTRATION_UG_ML) {
+        const msg = `Infusion ${i + 1}: Unsupported concentration (${conc} ug/mL). Supported: ${DEFAULT_NOREPINEPHRINE_CONCENTRATION_UG_ML} ug/mL.`;
         actionErrors[i] = msg;
         if (!overallError) overallError = msg;
         continue;
       }
-      if (rate !== VERIFIED_NOREPINEPHRINE_RATE_ML_PER_MIN) {
-        const msg = `Infusion ${i + 1}: Unsupported rate (${rate} mL/min). Supported: ${VERIFIED_NOREPINEPHRINE_RATE_ML_PER_MIN} mL/min.`;
-        actionErrors[i] = msg;
-        if (!overallError) overallError = msg;
-        continue;
-      }
-      if (dur !== VERIFIED_NOREPINEPHRINE_DURATION_S) {
-        const msg = `Infusion ${i + 1}: Unsupported duration (${dur} s). Supported: ${VERIFIED_NOREPINEPHRINE_DURATION_S} s.`;
-        actionErrors[i] = msg;
-        if (!overallError) overallError = msg;
-        continue;
+
+      if (isParam) {
+        if (!Number.isFinite(rate) || rate < MIN_NOREPINEPHRINE_RATE_ML_PER_MIN || rate > MAX_NOREPINEPHRINE_RATE_ML_PER_MIN) {
+          const msg = `Infusion ${i + 1}: Invalid norepinephrine infusion rate (${rate} mL/min). Allowed range: ${MIN_NOREPINEPHRINE_RATE_ML_PER_MIN} - ${MAX_NOREPINEPHRINE_RATE_ML_PER_MIN} mL/min.`;
+          actionErrors[i] = msg;
+          if (!overallError) overallError = msg;
+          continue;
+        }
+        if (!Number.isFinite(dur) || dur < MIN_NOREPINEPHRINE_DURATION_S || dur > MAX_NOREPINEPHRINE_DURATION_S) {
+          const msg = `Infusion ${i + 1}: Invalid norepinephrine infusion duration (${dur} s). Allowed range: ${MIN_NOREPINEPHRINE_DURATION_S} - ${MAX_NOREPINEPHRINE_DURATION_S} s.`;
+          actionErrors[i] = msg;
+          if (!overallError) overallError = msg;
+          continue;
+        }
+      } else {
+        if (rate !== VERIFIED_NOREPINEPHRINE_RATE_ML_PER_MIN) {
+          const msg = `Infusion ${i + 1}: Unsupported rate (${rate} mL/min). Single locked rate ${VERIFIED_NOREPINEPHRINE_RATE_ML_PER_MIN} mL/min supported.`;
+          actionErrors[i] = msg;
+          if (!overallError) overallError = msg;
+          continue;
+        }
+        if (dur !== VERIFIED_NOREPINEPHRINE_DURATION_S) {
+          const msg = `Infusion ${i + 1}: Unsupported duration (${dur} s). Single locked duration ${VERIFIED_NOREPINEPHRINE_DURATION_S} s supported.`;
+          actionErrors[i] = msg;
+          if (!overallError) overallError = msg;
+          continue;
+        }
       }
       deliveryDuration = dur;
     }
@@ -742,7 +768,7 @@ export const COMPARISON_PALETTE = [
 
 /**
  * Aligns continuous physiological trajectories from multiple scenarios onto a shared timeline.
- * 
+ *
  * Rules:
  *   1. Extracts the union of all discrete simulated timestamps across all scenarios.
  *   2. For each scenario and timestamp, locates the matching measurement within tolerance.
@@ -790,7 +816,11 @@ export function alignComparisonTrajectories(scenarios = [], toleranceSeconds = 2
       const startTime = Number(act.start_time_s ?? act.startTimeS ?? 0);
       const isNorepi = act.type === 'norepinephrine' || act.substance === 'Norepinephrine';
       const vol = act.bag_volume_ml ?? act.volume_ml;
-      const label = isNorepi ? 'Norepi (14µg/mL)' : `${vol || 100}mL Saline`;
+      const rate = act.rate_ml_per_min ?? act.rateMlPerMin;
+      const dur = act.duration_s ?? act.durationS;
+      const label = isNorepi
+        ? `Norepi (${(rate ?? 1.0).toFixed(1)}mL/min, ${dur ?? 120}s)`
+        : `${vol || 250}mL Saline${rate && rate !== 50 ? ` @ ${rate}mL/min` : ''}`;
       interventionMarkers.push({
         scenarioId: meta.id,
         scenarioName: meta.name,
@@ -1055,22 +1085,22 @@ export function computeReferenceDifferences(summaryRows = [], referenceId) {
 export const DEFAULT_STEP_J_STRATEGIES = [
   {
     id: 'strategy_1',
-    name: 'Strategy A: Fluid-Only Reference',
+    name: 'Strategy A',
     color: COMPARISON_PALETTE[0].color,
     baseline_s: 60,
     post_s: 60,
     actions: [
-      { id: 'act_a1', type: 'saline', volume_ml: 100, start_time_s: 60 },
+      { id: 'act_a1', type: 'saline', volume_ml: 100, rate_ml_per_min: 50, start_time_s: 60 },
     ],
   },
   {
     id: 'strategy_2',
-    name: 'Strategy B: Sequential Fluid & Vasopressor',
+    name: 'Strategy B',
     color: COMPARISON_PALETTE[1].color,
     baseline_s: 60,
     post_s: 60,
     actions: [
-      { id: 'act_b1', type: 'saline', volume_ml: 100, start_time_s: 60 },
+      { id: 'act_b1', type: 'saline', volume_ml: 100, rate_ml_per_min: 50, start_time_s: 60 },
       {
         id: 'act_b2',
         type: 'norepinephrine',
@@ -1083,13 +1113,13 @@ export const DEFAULT_STEP_J_STRATEGIES = [
   },
   {
     id: 'strategy_3',
-    name: 'Strategy C: Repeated Fluid & Vasopressor',
+    name: 'Strategy C',
     color: COMPARISON_PALETTE[2].color,
     baseline_s: 60,
     post_s: 60,
     actions: [
-      { id: 'act_c1', type: 'saline', volume_ml: 100, start_time_s: 60 },
-      { id: 'act_c2', type: 'saline', volume_ml: 100, start_time_s: 210 },
+      { id: 'act_c1', type: 'saline', volume_ml: 100, rate_ml_per_min: 50, start_time_s: 60 },
+      { id: 'act_c2', type: 'saline', volume_ml: 100, rate_ml_per_min: 50, start_time_s: 210 },
       {
         id: 'act_c3',
         type: 'norepinephrine',
@@ -1097,6 +1127,175 @@ export const DEFAULT_STEP_J_STRATEGIES = [
         rate_ml_per_min: 1.0,
         duration_s: 120,
         start_time_s: 360,
+      },
+    ],
+  },
+];
+
+/**
+ * Pre-configured comparison templates representing meaningful clinical / physiological hypotheses.
+ */
+export const EXPERIMENT_TEMPLATES = [
+  {
+    id: 'fluid_vasopressor',
+    title: 'With vs Without Vasopressor',
+    description: 'Compare 250mL saline alone vs saline + norepinephrine (1.0 mL/min, 120s) vs norepinephrine alone.',
+    strategies: [
+      {
+        id: 'strategy_1',
+        name: 'Strategy A: Saline Only',
+        color: COMPARISON_PALETTE[0].color,
+        baseline_s: 60,
+        post_s: 60,
+        actions: [{ id: 'act_1', type: 'saline', volume_ml: 250, rate_ml_per_min: 50, start_time_s: 60 }],
+      },
+      {
+        id: 'strategy_2',
+        name: 'Strategy B: Saline + Norepi',
+        color: COMPARISON_PALETTE[1].color,
+        baseline_s: 60,
+        post_s: 60,
+        actions: [
+          { id: 'act_2a', type: 'saline', volume_ml: 250, rate_ml_per_min: 50, start_time_s: 60 },
+          { id: 'act_2b', type: 'norepinephrine', concentration_ug_ml: 14.0, rate_ml_per_min: 1.0, duration_s: 120, start_time_s: 390 },
+        ],
+      },
+      {
+        id: 'strategy_3',
+        name: 'Strategy C: Norepi Only',
+        color: COMPARISON_PALETTE[2].color,
+        baseline_s: 60,
+        post_s: 60,
+        actions: [
+          { id: 'act_3', type: 'norepinephrine', concentration_ug_ml: 14.0, rate_ml_per_min: 1.0, duration_s: 120, start_time_s: 60 },
+        ],
+      },
+    ],
+  },
+  {
+    id: 'timing_sensitivity',
+    title: 'Intervention Start Time Sensitivity',
+    description: 'Evaluate the hemodynamic response when initiating a 250mL saline bolus at 60s, 120s, vs 180s.',
+    strategies: [
+      {
+        id: 'strategy_1',
+        name: 'Strategy A: Early Start (60s)',
+        color: COMPARISON_PALETTE[0].color,
+        baseline_s: 60,
+        post_s: 60,
+        actions: [{ id: 'act_1', type: 'saline', volume_ml: 250, rate_ml_per_min: 50, start_time_s: 60 }],
+      },
+      {
+        id: 'strategy_2',
+        name: 'Strategy B: Mid Start (120s)',
+        color: COMPARISON_PALETTE[1].color,
+        baseline_s: 60,
+        post_s: 60,
+        actions: [{ id: 'act_2', type: 'saline', volume_ml: 250, rate_ml_per_min: 50, start_time_s: 120 }],
+      },
+      {
+        id: 'strategy_3',
+        name: 'Strategy C: Delayed Start (180s)',
+        color: COMPARISON_PALETTE[2].color,
+        baseline_s: 60,
+        post_s: 60,
+        actions: [{ id: 'act_3', type: 'saline', volume_ml: 250, rate_ml_per_min: 50, start_time_s: 180 }],
+      },
+    ],
+  },
+  {
+    id: 'vasopressor_titration',
+    title: 'Norepinephrine Rate Titration',
+    description: 'Test norepinephrine titration rates (0.5 mL/min vs 1.0 mL/min vs 2.0 mL/min for 120s).',
+    strategies: [
+      {
+        id: 'strategy_1',
+        name: 'Strategy A: Low Rate (0.5 mL/min)',
+        color: COMPARISON_PALETTE[0].color,
+        baseline_s: 60,
+        post_s: 60,
+        actions: [{ id: 'act_1', type: 'norepinephrine', concentration_ug_ml: 14.0, rate_ml_per_min: 0.5, duration_s: 120, start_time_s: 60 }],
+      },
+      {
+        id: 'strategy_2',
+        name: 'Strategy B: Standard Rate (1.0 mL/min)',
+        color: COMPARISON_PALETTE[1].color,
+        baseline_s: 60,
+        post_s: 60,
+        actions: [{ id: 'act_2', type: 'norepinephrine', concentration_ug_ml: 14.0, rate_ml_per_min: 1.0, duration_s: 120, start_time_s: 60 }],
+      },
+      {
+        id: 'strategy_3',
+        name: 'Strategy C: High Rate (2.0 mL/min)',
+        color: COMPARISON_PALETTE[2].color,
+        baseline_s: 60,
+        post_s: 60,
+        actions: [{ id: 'act_3', type: 'norepinephrine', concentration_ug_ml: 14.0, rate_ml_per_min: 2.0, duration_s: 120, start_time_s: 60 }],
+      },
+    ],
+  },
+  {
+    id: 'duration_comparison',
+    title: 'Norepinephrine Infusion Duration',
+    description: 'Compare infusion durations (60s vs 120s vs 240s at 1.0 mL/min).',
+    strategies: [
+      {
+        id: 'strategy_1',
+        name: 'Strategy A: Short Duration (60s)',
+        color: COMPARISON_PALETTE[0].color,
+        baseline_s: 60,
+        post_s: 60,
+        actions: [{ id: 'act_1', type: 'norepinephrine', concentration_ug_ml: 14.0, rate_ml_per_min: 1.0, duration_s: 60, start_time_s: 60 }],
+      },
+      {
+        id: 'strategy_2',
+        name: 'Strategy B: Standard Duration (120s)',
+        color: COMPARISON_PALETTE[1].color,
+        baseline_s: 60,
+        post_s: 60,
+        actions: [{ id: 'act_2', type: 'norepinephrine', concentration_ug_ml: 14.0, rate_ml_per_min: 1.0, duration_s: 120, start_time_s: 60 }],
+      },
+      {
+        id: 'strategy_3',
+        name: 'Strategy C: Sustained Duration (240s)',
+        color: COMPARISON_PALETTE[2].color,
+        baseline_s: 60,
+        post_s: 60,
+        actions: [{ id: 'act_3', type: 'norepinephrine', concentration_ug_ml: 14.0, rate_ml_per_min: 1.0, duration_s: 240, start_time_s: 60 }],
+      },
+    ],
+  },
+  {
+    id: 'bolus_fractionation',
+    title: 'Bolus Fractionation & Rate',
+    description: 'Single large bolus (500mL @ 50 mL/min) vs two medium boluses (2x 250mL) vs rapid bolus (500mL @ 100 mL/min).',
+    strategies: [
+      {
+        id: 'strategy_1',
+        name: 'Strategy A: Single 500 mL',
+        color: COMPARISON_PALETTE[0].color,
+        baseline_s: 60,
+        post_s: 60,
+        actions: [{ id: 'act_1', type: 'saline', volume_ml: 500, rate_ml_per_min: 50, start_time_s: 60 }],
+      },
+      {
+        id: 'strategy_2',
+        name: 'Strategy B: Fractionated 2x 250 mL',
+        color: COMPARISON_PALETTE[1].color,
+        baseline_s: 60,
+        post_s: 60,
+        actions: [
+          { id: 'act_2a', type: 'saline', volume_ml: 250, rate_ml_per_min: 50, start_time_s: 60 },
+          { id: 'act_2b', type: 'saline', volume_ml: 250, rate_ml_per_min: 50, start_time_s: 390 },
+        ],
+      },
+      {
+        id: 'strategy_3',
+        name: 'Strategy C: Rapid 500 mL (@100 mL/min)',
+        color: COMPARISON_PALETTE[2].color,
+        baseline_s: 60,
+        post_s: 60,
+        actions: [{ id: 'act_3', type: 'saline', volume_ml: 500, rate_ml_per_min: 100, start_time_s: 60 }],
       },
     ],
   },
@@ -1123,10 +1322,17 @@ export function formatStrategyActionSummary(actions = []) {
       const isNorepi = act.type === 'norepinephrine' || act.substance === 'Norepinephrine';
       const start = act.start_time_s ?? act.startTimeS ?? 0;
       if (isNorepi) {
+        const rate = act.rate_ml_per_min ?? act.rateMlPerMin;
+        const dur = act.duration_s ?? act.durationS;
+        if (rate && (rate !== 1.0 || (dur && dur !== 120))) {
+          return `Norepi (14µg/mL @ ${Number(rate).toFixed(1)}mL/min, ${dur || 120}s) @ ${start}s`;
+        }
         return `Norepi (14µg/mL) @ ${start}s`;
       }
       const vol = act.volume_ml ?? act.bag_volume_ml ?? 100;
-      return `${vol}mL Saline @ ${start}s`;
+      const rate = act.rate_ml_per_min ?? act.rateMlPerMin;
+      const rateSuffix = rate && rate !== 50 ? ` @ ${rate}mL/min` : '';
+      return `${vol}mL Saline${rateSuffix} @ ${start}s`;
     })
     .join(' → ');
 }

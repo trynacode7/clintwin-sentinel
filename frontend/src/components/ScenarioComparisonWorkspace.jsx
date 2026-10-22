@@ -13,11 +13,19 @@ import {
   computeScenarioSummaryTable,
   computeReferenceDifferences,
   DEFAULT_STEP_J_STRATEGIES,
+  EXPERIMENT_TEMPLATES,
   calculateStrategyTotalSaline,
   formatStrategyActionSummary,
   VERIFIED_NOREPINEPHRINE_CONCENTRATION_UG_ML,
   VERIFIED_NOREPINEPHRINE_RATE_ML_PER_MIN,
   VERIFIED_NOREPINEPHRINE_DURATION_S,
+  MIN_NOREPINEPHRINE_RATE_ML_PER_MIN,
+  MAX_NOREPINEPHRINE_RATE_ML_PER_MIN,
+  DEFAULT_NOREPINEPHRINE_RATE_ML_PER_MIN,
+  MIN_NOREPINEPHRINE_DURATION_S,
+  MAX_NOREPINEPHRINE_DURATION_S,
+  DEFAULT_NOREPINEPHRINE_DURATION_S,
+  DEFAULT_NOREPINEPHRINE_CONCENTRATION_UG_ML,
   MIN_SALINE_VOLUME_ML,
   MAX_SALINE_VOLUME_ML,
   MIN_SALINE_RATE_ML_PER_MIN,
@@ -161,6 +169,16 @@ export default function ScenarioComparisonWorkspace() {
     setGeneralError(null);
   };
 
+  const handleLoadTemplate = (template) => {
+    if (running || !template?.strategies) return;
+    setStrategies(template.strategies);
+    setResultsMap({});
+    if (template.strategies.length > 0) {
+      setReferenceId(template.strategies[0].id);
+    }
+    setGeneralError(null);
+  };
+
   const handleUpdateStrategyName = (id, newName) => {
     setStrategies((prev) =>
       prev.map((s) => (s.id === id ? { ...s, name: newName } : s))
@@ -216,9 +234,9 @@ export default function ScenarioComparisonWorkspace() {
           ? {
               id: `act_${Date.now()}`,
               type: 'norepinephrine',
-              concentration_ug_ml: VERIFIED_NOREPINEPHRINE_CONCENTRATION_UG_ML,
-              rate_ml_per_min: VERIFIED_NOREPINEPHRINE_RATE_ML_PER_MIN,
-              duration_s: VERIFIED_NOREPINEPHRINE_DURATION_S,
+              concentration_ug_ml: DEFAULT_NOREPINEPHRINE_CONCENTRATION_UG_ML,
+              rate_ml_per_min: DEFAULT_NOREPINEPHRINE_RATE_ML_PER_MIN,
+              duration_s: DEFAULT_NOREPINEPHRINE_DURATION_S,
               start_time_s: newStart,
             }
           : {
@@ -272,19 +290,18 @@ export default function ScenarioComparisonWorkspace() {
         if (field === 'type') {
           if (value === 'norepinephrine') {
             current.type = 'norepinephrine';
-            current.concentration_ug_ml = VERIFIED_NOREPINEPHRINE_CONCENTRATION_UG_ML;
-            current.rate_ml_per_min = VERIFIED_NOREPINEPHRINE_RATE_ML_PER_MIN;
-            current.duration_s = VERIFIED_NOREPINEPHRINE_DURATION_S;
+            current.concentration_ug_ml = DEFAULT_NOREPINEPHRINE_CONCENTRATION_UG_ML;
+            current.rate_ml_per_min = DEFAULT_NOREPINEPHRINE_RATE_ML_PER_MIN;
+            current.duration_s = DEFAULT_NOREPINEPHRINE_DURATION_S;
             delete current.volume_ml;
-            delete current.rate_ml_per_min;
           } else {
             current.type = 'saline';
             current.volume_ml = current.volume_ml || 250;
-            current.rate_ml_per_min = current.rate_ml_per_min || 50;
+            current.rate_ml_per_min = 50;
             delete current.concentration_ug_ml;
             delete current.duration_s;
           }
-        } else if (field === 'volume_ml' || field === 'start_time_s' || field === 'rate_ml_per_min') {
+        } else if (field === 'volume_ml' || field === 'start_time_s' || field === 'rate_ml_per_min' || field === 'duration_s') {
           current[field] = Number(value);
         } else {
           current[field] = value;
@@ -315,12 +332,12 @@ export default function ScenarioComparisonWorkspace() {
       const strat = strategies[i];
       setActiveRunningIndex(i);
 
-      // Mark strategy as simulating in resultsMap
+      // Mark strategy as simulating in resultsMap (clear stale result on new run)
       setResultsMap((prev) => ({
         ...prev,
         [strat.id]: {
           status: 'simulating',
-          result: prev[strat.id]?.result || null,
+          result: null,
           error: null,
           wallClockSeconds: null,
         },
@@ -393,13 +410,13 @@ export default function ScenarioComparisonWorkspace() {
             </div>
             <div>
               <h2 className="text-base font-bold text-white tracking-tight flex items-center gap-2">
-                BioGears Scenario Comparison Workspace
+                Configurable Intervention Experiment Workspace
                 <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-cyan-950/70 text-cyan-300 border border-cyan-800/40 uppercase font-semibold">
-                  Step J
+                  BioGears Engine
                 </span>
               </h2>
               <p className="text-xs text-slate-400 mt-0.5">
-                Configure, execute, and compare up to three sequential intervention strategies (Saline & Norepinephrine) side-by-side using real BioGears physiological trajectory data.
+                Independently configure, simulate, and compare up to three sequential intervention strategies. Vary one physiological factor at a time across volume, infusion rate, start timing, and duration.
               </p>
             </div>
           </div>
@@ -410,9 +427,9 @@ export default function ScenarioComparisonWorkspace() {
             onClick={handleResetPresets}
             disabled={running}
             className="px-3 py-1.5 rounded-lg border border-slate-700 bg-slate-800/60 hover:bg-slate-700/60 text-slate-300 text-xs font-medium transition-all disabled:opacity-50 cursor-pointer"
-            title="Load default Strategies A (Fluid-only), B (Sequential), and C (Repeated boluses)"
+            title="Reset to default Strategies A, B, and C"
           >
-            Reset Presets
+            Reset
           </button>
           <button
             onClick={handleAddStrategy}
@@ -421,6 +438,31 @@ export default function ScenarioComparisonWorkspace() {
           >
             <span>+</span> Add Strategy ({strategies.length}/3)
           </button>
+        </div>
+      </div>
+
+      {/* Comparison Experiment Hypotheses & Templates Toolbar */}
+      <div className="p-3.5 rounded-xl bg-slate-900/50 border border-slate-800 space-y-2">
+        <div className="flex items-center justify-between text-xs text-slate-300 font-semibold">
+          <span className="flex items-center gap-2">
+            <span className="w-2 h-2 rounded-full bg-cyan-400" />
+            Quick Experiment Hypotheses (Vary 1 Factor at a Time)
+          </span>
+          <span className="text-[10px] text-slate-400 font-normal">Click any template to auto-populate Strategies A, B, and C</span>
+        </div>
+        <div className="flex flex-wrap gap-2 pt-1">
+          {EXPERIMENT_TEMPLATES.map((tmpl) => (
+            <button
+              key={tmpl.id}
+              onClick={() => handleLoadTemplate(tmpl)}
+              disabled={running}
+              className="px-2.5 py-1.5 rounded-lg bg-slate-950/80 hover:bg-slate-800 border border-slate-700/70 text-slate-300 text-xs transition-all text-left flex flex-col cursor-pointer disabled:opacity-40"
+              title={tmpl.description}
+            >
+              <span className="font-semibold text-slate-200">{tmpl.title}</span>
+              <span className="text-[9px] text-slate-400 truncate max-w-[200px]">{tmpl.description}</span>
+            </button>
+          ))}
         </div>
       </div>
 
@@ -634,15 +676,85 @@ export default function ScenarioComparisonWorkspace() {
 
                         {/* Dose / Volume Parameters */}
                         {isNorepi ? (
-                          <div className="p-2 rounded bg-purple-950/30 border border-purple-900/40 text-[10px] text-purple-300 font-mono space-y-1">
-                            <div className="flex items-center justify-between">
-                              <span className="text-purple-400 font-semibold">Locked Verified Dose:</span>
-                              <span className="text-[9px] px-1.5 py-0.2 rounded bg-purple-900/50 text-purple-200 border border-purple-700/50">BioGears Standard</span>
+                          <div className="space-y-2">
+                            {/* Infusion Rate Input + Presets */}
+                            <div>
+                              <div className="flex items-center justify-between text-[10px] mb-1">
+                                <label className="text-slate-400">Infusion Rate (mL/min)</label>
+                                <div className="flex items-center gap-1">
+                                  {[0.5, 1.0, 2.0].map((r) => (
+                                    <button
+                                      key={r}
+                                      type="button"
+                                      onClick={() => handleUpdateIntervention(strat.id, aIdx, 'rate_ml_per_min', r)}
+                                      disabled={running}
+                                      className={`px-1.5 py-0.2 rounded text-[9px] font-mono cursor-pointer border ${
+                                        (act.rate_ml_per_min ?? DEFAULT_NOREPINEPHRINE_RATE_ML_PER_MIN) === r
+                                          ? 'bg-purple-900/80 text-purple-200 border-purple-500'
+                                          : 'bg-slate-900 text-slate-400 border-slate-700 hover:text-slate-200'
+                                      }`}
+                                    >
+                                      {r.toFixed(1)}
+                                    </button>
+                                  ))}
+                                </div>
+                              </div>
+                              <input
+                                type="number"
+                                min={MIN_NOREPINEPHRINE_RATE_ML_PER_MIN}
+                                max={MAX_NOREPINEPHRINE_RATE_ML_PER_MIN}
+                                step="0.1"
+                                value={act.rate_ml_per_min ?? DEFAULT_NOREPINEPHRINE_RATE_ML_PER_MIN}
+                                onChange={(e) =>
+                                  handleUpdateIntervention(strat.id, aIdx, 'rate_ml_per_min', e.target.value)
+                                }
+                                disabled={running}
+                                className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-slate-200 text-xs font-mono focus:border-purple-500 outline-none"
+                              />
                             </div>
-                            <div className="grid grid-cols-3 gap-1 pt-0.5 text-slate-300 text-[10px]">
-                              <div>Conc: <span className="text-purple-300 font-bold">14 ?g/mL</span></div>
-                              <div>Rate: <span className="text-purple-300 font-bold">1.0 mL/min</span></div>
-                              <div>Dur: <span className="text-purple-300 font-bold">120s</span></div>
+
+                            {/* Infusion Duration Input + Presets */}
+                            <div>
+                              <div className="flex items-center justify-between text-[10px] mb-1">
+                                <label className="text-slate-400">Infusion Duration (s)</label>
+                                <div className="flex items-center gap-1">
+                                  {[60, 120, 180, 240].map((d) => (
+                                    <button
+                                      key={d}
+                                      type="button"
+                                      onClick={() => handleUpdateIntervention(strat.id, aIdx, 'duration_s', d)}
+                                      disabled={running}
+                                      className={`px-1.5 py-0.2 rounded text-[9px] font-mono cursor-pointer border ${
+                                        (act.duration_s ?? DEFAULT_NOREPINEPHRINE_DURATION_S) === d
+                                          ? 'bg-purple-900/80 text-purple-200 border-purple-500'
+                                          : 'bg-slate-900 text-slate-400 border-slate-700 hover:text-slate-200'
+                                      }`}
+                                    >
+                                      {d}s
+                                    </button>
+                                  ))}
+                                </div>
+                              </div>
+                              <input
+                                type="number"
+                                min={MIN_NOREPINEPHRINE_DURATION_S}
+                                max={MAX_NOREPINEPHRINE_DURATION_S}
+                                step="10"
+                                value={act.duration_s ?? DEFAULT_NOREPINEPHRINE_DURATION_S}
+                                onChange={(e) =>
+                                  handleUpdateIntervention(strat.id, aIdx, 'duration_s', e.target.value)
+                                }
+                                disabled={running}
+                                className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-slate-200 text-xs font-mono focus:border-purple-500 outline-none"
+                              />
+                            </div>
+
+                            {/* Concentration Note (Calibrated Stock) */}
+                            <div className="p-2 rounded bg-purple-950/20 border border-purple-900/40 text-[10px] text-purple-300/90 leading-tight">
+                              <span className="font-semibold text-purple-200">Stock Concentration: 14.0 µg/mL</span>
+                              <p className="text-[9px] text-slate-400 mt-0.5">
+                                Calibrated BioGears stock solution. Titration is simulated by varying rate (0.1–5.0 mL/min) and duration (10–600s).
+                              </p>
                             </div>
                           </div>
                         ) : (
@@ -870,6 +982,11 @@ export default function ScenarioComparisonWorkspace() {
           <span className="text-[10px] font-mono text-slate-400 bg-slate-950 px-2 py-0.5 rounded border border-slate-800">
             {summaryTableRows.filter((r) => r.status === 'completed').length} / {summaryTableRows.length} Strategies Completed
           </span>
+        </div>
+
+        {/* Clinical Governance & Non-Superiority Notice */}
+        <div className="p-2.5 rounded-lg bg-amber-950/20 border border-amber-900/40 text-[11px] text-amber-300/90 leading-relaxed">
+          <strong className="text-amber-200">Simulation Boundary Notice:</strong> Physiological trajectories reflect virtual reference physiology (StandardMale.xml). An elevated MAP or cardiac output in a strategy does not demonstrate clinical superiority or constitute an individualized treatment recommendation.
         </div>
 
         <div className="overflow-x-auto">
@@ -1159,29 +1276,24 @@ export default function ScenarioComparisonWorkspace() {
         </div>
       )}
 
-      {/* Clinical & Scientific Disclaimer Notice */}
-      <div className="rounded-xl bg-slate-950/90 border border-amber-900/30 p-4 text-xs">
+      {/* Physiological Simulation & Research Scope Notice */}
+      <div className="rounded-xl bg-slate-950/80 border border-slate-800/90 p-4 text-xs">
         <div className="flex items-start gap-3">
-          <div className="w-5 h-5 rounded-full bg-amber-500/10 border border-amber-500/30 flex items-center justify-center flex-shrink-0 mt-0.5">
-            <svg className="w-3 h-3 text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <div className="w-5 h-5 rounded-full bg-cyan-500/10 border border-cyan-500/30 flex items-center justify-center flex-shrink-0 mt-0.5">
+            <svg className="w-3 h-3 text-cyan-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
             </svg>
           </div>
-          <div className="space-y-1.5 text-slate-400">
-            <p className="font-semibold text-slate-300">
-              Physiological Simulation & Research Disclaimer
+          <div className="space-y-1 text-slate-400">
+            <div className="flex items-center gap-2">
+              <p className="font-semibold text-slate-300">Multi-Arm Simulation & Research Boundaries</p>
+              <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-slate-900 border border-slate-800 text-emerald-400">
+                StandardMale.xml
+              </span>
+            </div>
+            <p className="text-[11px] text-slate-400 leading-relaxed">
+              Comparison strategies solve multi-action interventions on continuous timelines using the BioGears mechanistic vascular model. Differences quantify pharmacokinetic and fluid dynamic divergence on virtual reference physiology, independently of individual patient risk estimation.
             </p>
-            <ul className="list-disc list-inside space-y-1 text-[11px] text-slate-400">
-              <li>
-                <span className="text-slate-300">Model Limitation:</span> All scenarios are solved using the BioGears engine configured with <span className="font-mono text-slate-200">StandardMale.xml</span>. This is a generic physiological reference model and is not calibrated to the individual ICU patient.
-              </li>
-              <li>
-                <span className="text-slate-300">Comparative Differences:</span> Reported deltas and relative differences are strictly descriptive outputs from the mechanistic ODE vascular model. They do not constitute clinical recommendations or evidence of therapeutic superiority.
-              </li>
-              <li>
-                <span className="text-slate-300">Sepsis Risk Separation:</span> This scenario comparison workspace simulates physiological fluid dynamics and does not alter or recompute the BiLSTM sepsis risk prediction model.
-              </li>
-            </ul>
           </div>
         </div>
       </div>

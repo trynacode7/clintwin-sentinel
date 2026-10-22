@@ -74,7 +74,7 @@ class TestMixedInterventionSchemas:
             NorepinephrineActionRequest(
                 type="norepinephrine",
                 start_time_s=60.0,
-                rate_ml_per_min=2.5,
+                rate_ml_per_min=10.0,
             )
 
     def test_norepinephrine_rejects_unverified_duration(self):
@@ -82,8 +82,18 @@ class TestMixedInterventionSchemas:
             NorepinephrineActionRequest(
                 type="norepinephrine",
                 start_time_s=60.0,
-                duration_s=300.0,
+                duration_s=1000.0,
             )
+
+    def test_norepinephrine_accepts_parameterized_rate_and_duration(self):
+        req = NorepinephrineActionRequest(
+            type="norepinephrine",
+            start_time_s=60.0,
+            rate_ml_per_min=2.5,
+            duration_s=300.0,
+        )
+        assert req.rate_ml_per_min == 2.5
+        assert req.duration_s == 300.0
 
     def test_sequential_whatif_request_mixed_payload(self):
         payload = SequentialWhatIfRequest(

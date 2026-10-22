@@ -1,11 +1,26 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 
-const API_BASE = 'http://localhost:8000';
+export const API_BASE = import.meta?.env?.VITE_API_BASE || 'http://localhost:8000';
 // Timeout for each fetch in milliseconds — fail fast so fallback kicks in quickly
 const FETCH_TIMEOUT_MS = 4000;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
+/** Check backend health endpoint */
+export async function checkBackendHealth() {
+  try {
+    const res = await fetchWithTimeout(`${API_BASE}/health`, {}, 2500);
+    return res && res.status === 'ok';
+  } catch {
+    try {
+      const res = await fetchWithTimeout(`${API_BASE}/`, {}, 2500);
+      return res && res.status === 'ok';
+    } catch {
+      return false;
+    }
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Fetch with an AbortController-based timeout. */
@@ -183,6 +198,7 @@ function generateFallbackPatientData(patientId) {
     },
     vitals,
     shap,
+    attribution: shap,
     attention: { matrix: attnMatrix, labels: attnLabels },
     latent_trajectory: trajectory,
     explanation: explanations[archetype] || explanations.stable,
@@ -206,18 +222,49 @@ function generateFallbackPatientList() {
 // ─────────────────────────────────────────────────────────────────────────────
 function normalisePatientResponse(apiResp) {
   const pat = apiResp.patient || {};
+  const pred = apiResp.prediction || {};
+  const attr = apiResp.gradient_attribution || apiResp.attribution || apiResp.shap;
+
+  const patientId = pat.id ?? pat.stay_id;
+  const riskScore = pred.risk_score ?? pat.risk_score ?? pat.latest_risk_score ?? 0;
+  const status = pred.status ?? pat.status ?? pat.latest_status ?? 'Stable';
+
+  let vitals = apiResp.vitals;
+  if (!vitals && Array.isArray(apiResp.trajectory) && apiResp.trajectory.length > 0) {
+    vitals = {
+      timestamps: apiResp.trajectory.map(w => w.window_end_time || `w${w.window_idx}`),
+      heart_rate: apiResp.trajectory.map(w => w.observed_vitals?.heart_rate),
+      map: apiResp.trajectory.map(w => w.observed_vitals?.map),
+      spo2: apiResp.trajectory.map(w => w.observed_vitals?.spo2),
+      resp_rate: apiResp.trajectory.map(w => w.observed_vitals?.resp_rate),
+      lactate: apiResp.trajectory.map(w => w.observed_vitals?.lactate),
+    };
+  } else if (!vitals && apiResp.observed_vitals) {
+    const ov = apiResp.observed_vitals;
+    vitals = {
+      timestamps: ['Current'],
+      heart_rate: [ov.heart_rate],
+      map: [ov.map],
+      spo2: [ov.spo2],
+      resp_rate: [ov.resp_rate],
+      lactate: [ov.lactate],
+    };
+  }
+
   return {
-    // current_patient shape consumed by App.jsx
     current_patient: {
-      id: pat.id,
-      risk_score: pat.risk_score,
-      status: pat.status,
-      risk_trend: pat.risk_trend || 'stable',
+      id: patientId,
+      name: pat.name || (patientId ? 'Patient ' + patientId : 'Patient'),
+      risk_score: riskScore,
+      status: status,
+      risk_trend: pat.risk_trend || (riskScore >= 0.5 ? 'increasing' : 'stable'),
+      hours_in_icu: pat.hours_in_icu ?? pat.n_observed_timesteps ?? 24,
     },
-    vitals: apiResp.vitals,
-    shap: apiResp.shap,
+    vitals: vitals,
+    shap: apiResp.shap || attr,
+    attribution: attr,
     attention: apiResp.attention,
-    latent_trajectory: apiResp.latent_trajectory,
+    latent_trajectory: apiResp.latent_trajectory || apiResp.trajectory,
     explanation: apiResp.explanation,
   };
 }
@@ -256,7 +303,16 @@ export function usePatientData() {
   const loadPatientList = useCallback(async () => {
     try {
       const json = await fetchWithTimeout(`${API_BASE}/patients`);
-      const list = json.patients || [];
+      const rawList = json.patients || [];
+      const list = rawList.map(p => ({
+        id: p.id ?? p.stay_id,
+        stay_id: p.stay_id ?? p.id,
+        name: p.name || `Patient ${p.stay_id ?? p.id}`,
+        status: p.status || p.latest_status || 'Stable',
+        risk_score: p.risk_score ?? p.latest_risk_score ?? 0,
+        hours_in_icu: p.hours_in_icu ?? p.n_observed_timesteps ?? 24,
+        risk_trend: p.risk_trend || (p.latest_risk_score >= 0.5 ? 'increasing' : 'stable'),
+      }));
       setPatients(list);
       backendAvailableRef.current = true;
       setDemoMode(false);
@@ -286,7 +342,7 @@ export function usePatientData() {
     if (backendAvailableRef.current === false) {
       const fallback = generateFallbackPatientData(patientId);
       const normalised = normalisePatientResponse(fallback);
-      setData(prev => ({ ...normalised, mode: 'demo', patients: prev?.patients || generateFallbackPatientList() }));
+      setData(prev => ({ ...normalised, mode: 'demo', is_fallback: true, patients: prev?.patients || generateFallbackPatientList() }));
       setLoading(false);
       setPatientLoading(false);
       return;
@@ -296,67 +352,87 @@ export function usePatientData() {
       const apiResp = await fetchWithTimeout(`${API_BASE}/patient/${patientId}`);
       let normalised = normalisePatientResponse(apiResp);
 
-      // In Real ML Mode, invoke POST /predict with patient vitals
+      // In Dynamic ML Mode, invoke POST /predict with patient trajectory vitals
       if (activeMode === 'real_ml') {
-        const vitals = apiResp.vitals || {};
-        const timestamps = vitals.timestamps || [];
-        const n = timestamps.length || 72;
-        const patientData = [];
-        for (let i = 0; i < n; i++) {
-          const hr = vitals.heart_rate?.[i];
-          const mp = vitals.map?.[i];
-          const rr = vitals.resp_rate?.[i];
-          const sp = vitals.spo2?.[i];
-          const lc = vitals.lactate?.[i];
-          const baseTime = Date.now() - (n - 1 - i) * 5 * 60 * 1000;
-          patientData.push({
-            charttime: new Date(baseTime).toISOString(),
-            heart_rate: hr !== undefined && hr !== null ? Number(hr) : null,
-            map: mp !== undefined && mp !== null ? Number(mp) : null,
-            resp_rate: rr !== undefined && rr !== null ? Number(rr) : null,
-            spo2: sp !== undefined && sp !== null ? Number(sp) : null,
-            temp: 37.0,
-            lactate: lc !== undefined && lc !== null ? Number(lc) : null,
-            wbc: 7.0,
+        let patientData = [];
+        if (Array.isArray(apiResp.trajectory) && apiResp.trajectory.length > 0) {
+          patientData = apiResp.trajectory.map((w, idx) => {
+            const ov = w.observed_vitals || {};
+            return {
+              charttime: w.window_end_time || new Date(Date.now() - (apiResp.trajectory.length - 1 - idx) * 3600000).toISOString(),
+              heart_rate: ov.heart_rate != null ? Number(ov.heart_rate) : null,
+              map: ov.map != null ? Number(ov.map) : null,
+              resp_rate: ov.resp_rate != null ? Number(ov.resp_rate) : null,
+              spo2: ov.spo2 != null ? Number(ov.spo2) : null,
+              temp: ov.temp != null ? Number(ov.temp) : 37.0,
+              lactate: ov.lactate != null ? Number(ov.lactate) : null,
+              wbc: ov.wbc != null ? Number(ov.wbc) : 7.0,
+            };
           });
+        } else if (normalised.vitals?.timestamps?.length > 0) {
+          const nv = normalised.vitals;
+          patientData = nv.timestamps.map((t, idx) => ({
+            charttime: typeof t === 'string' && t.length > 10 ? t : new Date(Date.now() - (nv.timestamps.length - 1 - idx) * 3600000).toISOString(),
+            heart_rate: nv.heart_rate?.[idx] != null ? Number(nv.heart_rate[idx]) : null,
+            map: nv.map?.[idx] != null ? Number(nv.map[idx]) : null,
+            resp_rate: nv.resp_rate?.[idx] != null ? Number(nv.resp_rate[idx]) : null,
+            spo2: nv.spo2?.[idx] != null ? Number(nv.spo2[idx]) : null,
+            temp: 37.0,
+            lactate: nv.lactate?.[idx] != null ? Number(nv.lactate[idx]) : null,
+            wbc: 7.0,
+          }));
         }
 
-        const predictResp = await fetchWithTimeout(`${API_BASE}/predict`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            patient_data: patientData,
-            patient_id: patientId,
-            model_type: 'lstm',
-          }),
-        });
+        try {
+          const predictResp = await fetchWithTimeout(`${API_BASE}/predict`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              patient_data: patientData,
+              patient_id: String(patientId),
+              model_type: 'lstm',
+            }),
+          });
 
-        // Map live SHAP values
-        const rawShap = predictResp.shap_values || [];
-        const formattedShap = rawShap.map(item => ({
-          feature: item.clinical_name || item.feature,
-          value: item.importance,
-          importance: Math.abs(item.importance),
-          direction: item.importance >= 0 ? 'risk' : 'protective',
-        })).sort((a, b) => b.importance - a.importance);
+          // Map live gradient attribution / SHAP values
+          const rawShap = predictResp.gradient_attribution || predictResp.attribution || predictResp.shap_values || [];
+          const formattedShap = rawShap.map(item => ({
+            feature: item.clinical_name || item.feature,
+            value: item.importance,
+            importance: Math.abs(item.importance),
+            direction: item.importance >= 0 ? 'risk' : 'protective',
+          })).sort((a, b) => b.importance - a.importance);
 
-        normalised = {
-          ...normalised,
-          current_patient: {
-            ...normalised.current_patient,
-            risk_score: predictResp.risk_score,
-            status: predictResp.status,
-            risk_trend: predictResp.risk_score >= 0.5 ? 'increasing' : 'stable',
-            model_type: 'BiLSTM (256-dim z_t)',
-            is_real_ml: true,
-          },
-          shap: formattedShap.length > 0 ? formattedShap : normalised.shap,
-          explanation: predictResp.explanation || normalised.explanation,
-          latent_trajectory: predictResp.latent_trajectory && predictResp.latent_trajectory.length > 0
-            ? predictResp.latent_trajectory
-            : normalised.latent_trajectory,
-          mode: 'real_ml',
-        };
+          normalised = {
+            ...normalised,
+            current_patient: {
+              ...normalised.current_patient,
+              risk_score: predictResp.risk_score,
+              status: predictResp.status,
+              risk_trend: predictResp.risk_score >= 0.5 ? 'increasing' : 'stable',
+              model_type: 'BiLSTM (256-dim z_t)',
+              is_real_ml: true,
+            },
+            shap: formattedShap.length > 0 ? formattedShap : normalised.shap,
+            attribution: formattedShap.length > 0 ? formattedShap : (normalised.attribution || normalised.shap),
+            explanation: predictResp.explanation || normalised.explanation,
+            latent_trajectory: predictResp.latent_trajectory && predictResp.latent_trajectory.length > 0
+              ? predictResp.latent_trajectory
+              : normalised.latent_trajectory,
+            mode: 'real_ml',
+          };
+        } catch (predictErr) {
+          console.error('[ClinTwin] Dynamic ML /predict error:', predictErr.message);
+          setError(`Dynamic ML inference failed: ${predictErr.message}. Displaying precomputed cohort baseline.`);
+          normalised = {
+            ...normalised,
+            mode: 'demo',
+            current_patient: {
+              ...normalised.current_patient,
+              is_real_ml: false,
+            },
+          };
+        }
       } else {
         normalised.mode = 'demo';
       }
@@ -365,15 +441,16 @@ export function usePatientData() {
       setDemoMode(false);
       setData(prev => ({ ...normalised, patients: prev?.patients || patients }));
     } catch (err) {
-      console.warn(`[ClinTwin] /patient/${patientId} or /predict failed:`, err.message);
-      if (activeMode === 'real_ml') {
-        setError(`Real ML Mode failed: ${err.message}. Showing baseline demo.`);
+      console.warn(`[ClinTwin] /patient/${patientId} failed:`, err.message);
+      const isHealthy = await checkBackendHealth();
+      if (!isHealthy) {
+        backendAvailableRef.current = false;
+        setDemoMode(true);
       }
-      backendAvailableRef.current = false;
-      setDemoMode(true);
+      setError(`Failed to retrieve patient: ${err.message}`);
       const fallback = generateFallbackPatientData(patientId);
       const normalised = normalisePatientResponse(fallback);
-      setData(prev => ({ ...normalised, mode: 'demo', patients: prev?.patients || generateFallbackPatientList() }));
+      setData(prev => ({ ...normalised, mode: 'demo', is_fallback: true, patients: prev?.patients || generateFallbackPatientList() }));
     } finally {
       setLoading(false);
       setPatientLoading(false);
@@ -388,7 +465,7 @@ export function usePatientData() {
       const list = await loadPatientList();
       if (cancelled) return;
 
-      const firstId = list[0]?.id || 'patient_001';
+      const firstId = list[0]?.id ?? list[0]?.stay_id ?? 'patient_001';
       setSelectedPatient(firstId);
       await loadPatient(firstId, true);
     }

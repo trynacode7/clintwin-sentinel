@@ -116,11 +116,16 @@ class TestNorepinephrineSchemaValidation:
 
     def test_rejection_of_altered_rate(self):
         with pytest.raises(ValueError, match="rate"):
-            NorepinephrineActionRequest(start_time_s=210.0, rate_ml_per_min=2.0)
+            NorepinephrineActionRequest(start_time_s=210.0, rate_ml_per_min=10.0)
 
     def test_rejection_of_altered_duration(self):
         with pytest.raises(ValueError, match="duration"):
-            NorepinephrineActionRequest(start_time_s=210.0, duration_s=180.0)
+            NorepinephrineActionRequest(start_time_s=210.0, duration_s=1000.0)
+
+    def test_acceptance_of_parameterized_rate_and_duration(self):
+        req = NorepinephrineActionRequest(start_time_s=210.0, rate_ml_per_min=2.0, duration_s=180.0)
+        assert req.rate_ml_per_min == 2.0
+        assert req.duration_s == 180.0
 
 
 class TestDurationAndTimingSemantics:
@@ -274,3 +279,101 @@ class TestAPISequentialValidation:
         }
         res = client.post("/biogears/whatif/sequential", json=payload)
         assert res.status_code == 422
+
+
+class TestStepHParameterizedNorepinephrine:
+    """Step H: Tests for configurable norepinephrine rate, duration, and XML propagation."""
+
+    def test_xml_generation_with_custom_rate_and_duration(self):
+        from backend.biogears_scenario_builder import (
+            build_sequential_scenario_xml,
+            BioGearsSequentialScenario,
+            BioGearsNorepinephrineInfusion,
+        )
+        scenario = BioGearsSequentialScenario(
+            scenario_name="StepH_NE_Test",
+            baseline_stabilization_s=60.0,
+            post_observation_s=60.0,
+            actions=[
+                BioGearsNorepinephrineInfusion(
+                    concentration_ug_ml=14.0,
+                    rate_ml_per_min=2.5,
+                    duration_s=180.0,
+                    start_time_s=60.0,
+                )
+            ],
+        )
+        xml_str = build_sequential_scenario_xml(scenario)
+
+        # Verify rate of 2.5 mL/min is in XML
+        assert 'value="2.5"' in xml_str or 'value="2.50' in xml_str
+        assert "<Substance>Norepinephrine</Substance>" in xml_str
+        # Verify termination occurs at start (60) + duration (180) = 240s
+        assert 'value="180"' in xml_str or 'value="180.0"' in xml_str
+        # Stop infusion (rate 0.0)
+        assert '<Rate value="0" unit="mL/min" />' in xml_str
+
+    def test_cache_fingerprint_changes_with_norepi_parameters(self):
+        from backend.biogears_scenario_builder import (
+            BioGearsSequentialScenario,
+            BioGearsNorepinephrineInfusion,
+        )
+        from backend.biogears_scenario_cache import compute_scenario_fingerprint
+
+        scen_base = BioGearsSequentialScenario(
+            scenario_name="NE_Base",
+            actions=[BioGearsNorepinephrineInfusion(rate_ml_per_min=1.0, duration_s=120.0, start_time_s=60.0)],
+        )
+        scen_rate = BioGearsSequentialScenario(
+            scenario_name="NE_Rate",
+            actions=[BioGearsNorepinephrineInfusion(rate_ml_per_min=2.0, duration_s=120.0, start_time_s=60.0)],
+        )
+        scen_dur = BioGearsSequentialScenario(
+            scenario_name="NE_Dur",
+            actions=[BioGearsNorepinephrineInfusion(rate_ml_per_min=1.0, duration_s=60.0, start_time_s=60.0)],
+        )
+
+        fp_base = compute_scenario_fingerprint(scen_base)
+        fp_rate = compute_scenario_fingerprint(scen_rate)
+        fp_dur = compute_scenario_fingerprint(scen_dur)
+
+        assert fp_base != fp_rate, "Different rate must produce distinct cache fingerprint"
+        assert fp_base != fp_dur, "Different duration must produce distinct cache fingerprint"
+        assert fp_rate != fp_dur, "Different rate and duration must produce distinct fingerprints"
+
+    def test_api_rejects_unsupported_concentration_with_explanation(self):
+        payload = {
+            "scenario_name": "UnsupportedConcTest",
+            "actions": [
+                {
+                    "type": "norepinephrine",
+                    "concentration_ug_ml": 25.0,
+                    "rate_ml_per_min": 1.0,
+                    "duration_s": 120.0,
+                    "start_time_s": 60.0,
+                }
+            ],
+        }
+        res = client.post("/biogears/whatif/sequential", json=payload)
+        assert res.status_code == 422
+        detail_str = str(res.json()["detail"])
+        assert "14" in detail_str
+        assert "concentration" in detail_str.lower() or "stock" in detail_str.lower()
+
+    def test_api_accepts_parameterized_norepinephrine(self):
+        payload = {
+            "scenario_name": "ValidParamNETest",
+            "actions": [
+                {
+                    "type": "norepinephrine",
+                    "concentration_ug_ml": 14.0,
+                    "rate_ml_per_min": 2.0,
+                    "duration_s": 90.0,
+                    "start_time_s": 60.0,
+                }
+            ],
+        }
+        from backend.biogears_schemas import SequentialWhatIfRequest
+        req = SequentialWhatIfRequest(**payload)
+        assert req.actions[0].rate_ml_per_min == 2.0
+        assert req.actions[0].duration_s == 90.0

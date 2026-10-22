@@ -1,0 +1,13 @@
+Run_ID,Title,Interventions,Sim_Duration_s,Exit_Status,HR_Base_bpm,HR_Final_bpm,HR_Delta_Final_bpm,MAP_Base_mmHg,MAP_Peak_mmHg,MAP_Peak_Time_s,MAP_Delta_Peak_mmHg,MAP_Final_mmHg,MAP_Delta_Final_mmHg,CO_Base_L_min,CO_Final_L_min,CO_Delta_Final_L_min,BV_Base_L,BV_Final_L,BV_Delta_Final_L
+exp1_rate_0_5,"Norepinephrine Rate Sensitivity (0.5 mL/min, 120s)","norepinephrine@60.0s",240.0,0,72.28,72.09,-0.19,95.93,97.20,175.02,+1.27,96.40,+0.47,5.81,5.74,-0.07,5.53,5.54,+0.01
+exp1_rate_1_0,"Norepinephrine Rate Sensitivity (1.0 mL/min, 120s)","norepinephrine@60.0s",240.0,0,72.28,72.00,-0.28,95.93,99.00,180.02,+3.07,96.80,+0.87,5.81,5.67,-0.14,5.53,5.54,+0.01
+exp1_rate_2_0,"Norepinephrine Rate Sensitivity (2.0 mL/min, 120s)","norepinephrine@60.0s",240.0,0,72.28,71.21,-1.07,95.93,102.60,180.02,+6.67,97.80,+1.87,5.81,5.53,-0.28,5.53,5.54,+0.01
+exp2_dur_60s,"Norepinephrine Duration Sensitivity (60s @ 1.0 mL/min)","norepinephrine@60.0s",180.0,0,72.28,72.11,-0.17,95.93,98.00,110.02,+2.07,96.50,+0.57,5.81,5.72,-0.09,5.53,5.54,+0.01
+exp2_dur_120s,"Norepinephrine Duration Sensitivity (120s @ 1.0 mL/min)","norepinephrine@60.0s",240.0,0,72.28,72.00,-0.28,95.93,99.00,180.02,+3.07,96.80,+0.87,5.81,5.67,-0.14,5.53,5.54,+0.01
+exp2_dur_240s,"Norepinephrine Duration Sensitivity (240s @ 1.0 mL/min)","norepinephrine@60.0s",360.0,0,72.28,71.37,-0.91,95.93,100.00,290.02,+4.07,97.20,+1.27,5.81,5.67,-0.14,5.53,5.54,+0.01
+exp3_start_60s,"Start-Time Sensitivity (Start @ 60s, 60s duration)","norepinephrine@60.0s",180.0,0,72.28,72.11,-0.17,95.93,98.00,110.02,+2.07,96.50,+0.57,5.81,5.72,-0.09,5.53,5.54,+0.01
+exp3_start_120s,"Start-Time Sensitivity (Start @ 120s, 60s duration)","norepinephrine@120.0s",240.0,0,72.28,72.11,-0.17,95.93,98.00,170.02,+2.07,96.40,+0.47,5.81,5.72,-0.09,5.53,5.54,+0.01
+exp3_start_180s,"Start-Time Sensitivity (Start @ 180s, 60s duration)","norepinephrine@180.0s",300.0,0,72.28,72.11,-0.17,95.93,97.80,240.02,+1.87,96.40,+0.47,5.81,5.73,-0.08,5.53,5.54,+0.01
+exp4_saline_only,"Matched Saline Control (250mL @ 60s, 540s total)","saline@60.0s",540.0,0,72.28,69.91,-2.37,95.93,97.50,425.02,+1.57,97.50,+1.57,5.81,6.02,+0.21,5.53,5.78,+0.25
+exp4_saline_plus_norepi,"Saline Followed by Norepinephrine (250mL @ 60s -> Norepi @ 360s)","saline@60.0s -> norepinephrine@360.0s",540.0,0,72.28,69.51,-2.77,95.93,100.30,480.02,+4.37,97.70,+1.77,5.81,6.03,+0.22,5.53,5.79,+0.26
+exp5_repeat,"Repeatability Verification (Live Run vs Cached Run)","norepinephrine@60.0s",180.0,0,72.28,72.11,-0.17,95.93,98.00,110.02,+2.07,96.50,+0.57,5.81,5.72,-0.09,5.53,5.54,+0.01

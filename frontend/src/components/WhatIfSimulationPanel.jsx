@@ -20,7 +20,7 @@ import {
 import WhatIfTrajectoryChart from './WhatIfTrajectoryChart';
 import ScenarioComparisonWorkspace from './ScenarioComparisonWorkspace';
 
-export default function WhatIfSimulationPanel() {
+export default function WhatIfSimulationPanel({ patient = null }) {
   // Top-level workspace mode: 'comparison' (Step H) or 'single' (Step G & I)
   const [workspaceMode, setWorkspaceMode] = useState('comparison');
 
@@ -271,7 +271,7 @@ export default function WhatIfSimulationPanel() {
           }`}
         >
           <span className="w-2 h-2 rounded-full bg-cyan-400" />
-          <span>Scenario Comparison Workspace (Step H)</span>
+          <span>Scenario Comparison Workspace</span>
         </button>
         <button
           onClick={() => setWorkspaceMode('single')}
@@ -281,7 +281,7 @@ export default function WhatIfSimulationPanel() {
               : 'text-slate-400 hover:text-slate-200'
           }`}
         >
-          <span>Single Scenario Simulation (Step G)</span>
+          <span>Single Scenario Simulation</span>
         </button>
       </div>
 
@@ -305,8 +305,19 @@ export default function WhatIfSimulationPanel() {
               </span>
             </h2>
             <p className="text-xs text-slate-400">
-              Intervention modeling on BioGears StandardMale.xml virtual subject • Mechanistic ODE solver via POST /biogears/whatif/sequential
+              Mechanistic whole-body physiological simulation of fluid boluses and vasoactive infusions • BioGears engine
             </p>
+            {patient?.id && (
+              <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+                <span className="px-2 py-0.5 rounded bg-cyan-950/60 border border-cyan-800/40 text-cyan-300 text-[11px] font-medium flex items-center gap-1.5">
+                  <span className="w-1.5 h-1.5 rounded-full bg-cyan-400" />
+                  Active Context: {patient.name || `Patient ${patient.id}`} ({patient.status || 'ICU'})
+                </span>
+                <span className="px-2 py-0.5 rounded bg-slate-900 border border-slate-800 text-slate-400 text-[11px] font-mono">
+                  Reference Physiology: StandardMale.xml
+                </span>
+              </div>
+            )}
           </div>
         </div>
 
@@ -1001,32 +1012,26 @@ export default function WhatIfSimulationPanel() {
             actions={returnedActions.length > 0 ? returnedActions : actions}
           />
 
-          {/* F. Clinical and Simulation Disclaimer */}
-          <div className="rounded-xl bg-slate-950/90 border border-amber-900/30 p-4 text-xs">
+          {/* F. Physiological Simulation & Research Scope Notice */}
+          <div className="rounded-xl bg-slate-950/80 border border-slate-800/90 p-4 text-xs">
             <div className="flex items-start gap-3">
-              <div className="w-5 h-5 rounded-full bg-amber-500/10 border border-amber-500/30 flex items-center justify-center flex-shrink-0 mt-0.5">
-                <svg className="w-3 h-3 text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <div className="w-5 h-5 rounded-full bg-cyan-500/10 border border-cyan-500/30 flex items-center justify-center flex-shrink-0 mt-0.5">
+                <svg className="w-3 h-3 text-cyan-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                 </svg>
               </div>
-              <div className="space-y-1.5 text-slate-400">
-                <p className="font-semibold text-slate-300">Clinical & Simulation Disclaimer</p>
-                <ul className="list-disc list-inside space-y-1 text-[11px] text-slate-400">
-                  <li>
-                    The simulation currently uses BioGears' <span className="text-slate-300 font-mono">StandardMale.xml</span> patient configuration.
-                  </li>
-                  <li>
-                    It is a mechanistic physiological simulation, not an individualized model of the selected dashboard patient.
-                  </li>
-                  <li>
-                    Simulated physiological changes do not establish clinical effectiveness or safety.
-                  </li>
-                  <li>
-                    This endpoint returns simulated physiological results; it has not independently recalculated or validated the BiLSTM sepsis-risk prediction.
-                  </li>
-                </ul>
+              <div className="space-y-1 text-slate-400">
+                <div className="flex items-center gap-2">
+                  <p className="font-semibold text-slate-300">Physiological Simulation & Research Scope</p>
+                  <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-slate-900 border border-slate-800 text-emerald-400">
+                    StandardMale.xml
+                  </span>
+                </div>
+                <p className="text-[11px] text-slate-400 leading-relaxed">
+                  Trajectories model mechanistic hemodynamic response via the BioGears whole-body human physiology engine. These continuous simulation outputs represent virtual reference physiology and are evaluated separately from individual patient sepsis risk scores.
+                </p>
                 {simulationResult.provenance_disclaimer && (
-                  <p className="text-[10px] text-slate-500 pt-1.5 border-t border-slate-800 font-mono">
+                  <p className="text-[10px] text-slate-500 pt-1 border-t border-slate-800/80 font-mono">
                     Provenance: {simulationResult.provenance_disclaimer}
                   </p>
                 )}

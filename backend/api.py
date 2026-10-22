@@ -78,7 +78,7 @@ import json
 import numpy as np
 import torch
 import logging
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Union
 from contextlib import asynccontextmanager
 from starlette.concurrency import run_in_threadpool
 
@@ -381,7 +381,7 @@ app.add_middleware(
 class PredictRequest(BaseModel):
     """Request body for /predict endpoint."""
     patient_data: List[Dict]  # List of timestep dicts with feature values
-    patient_id: Optional[str] = None
+    patient_id: Optional[Union[str, int]] = None
     model_type: Optional[str] = "lstm"
 
 
@@ -644,6 +644,7 @@ class LegacyPatientDetailResponse(BaseModel):
 
 
 @app.get("/")
+@app.get("/health")
 async def root():
     """Health check."""
     return {"status": "ok", "service": "ICU Digital Twin API"}
@@ -1209,7 +1210,10 @@ async def post_biogears_whatif_sequential(request: SequentialWhatIfRequest):
                 rate_tag = f"@{int(rate_val)}mLmin" if rate_val != 50.0 else ""
                 parts.append(f"{int(a.volume_ml)}mL{rate_tag}")
             else:
-                parts.append("Norepi14ug")
+                rate_val = getattr(a, "rate_ml_per_min", 1.0)
+                dur_val = getattr(a, "duration_s", 120.0)
+                conc_val = getattr(a, "concentration_ug_ml", 14.0)
+                parts.append(f"NE_{int(conc_val)}ug@{rate_val}mLmin_{int(dur_val)}s")
         summary_str = "_".join(parts)
         scenario_name = f"SeqIntervention_{len(req.actions)}actions_{summary_str}"
 

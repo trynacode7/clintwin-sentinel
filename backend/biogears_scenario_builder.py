@@ -117,9 +117,18 @@ MAX_SALINE_RATE_ML_PER_MIN = 100.0
 DEFAULT_SALINE_VOLUME_ML = 250.0
 DEFAULT_SALINE_RATE_ML_PER_MIN = 50.0
 
-VERIFIED_NOREPINEPHRINE_CONCENTRATION = 14.0  # ug/mL
-VERIFIED_NOREPINEPHRINE_RATE = 1.0           # mL/min
-VERIFIED_NOREPINEPHRINE_DURATION = 120.0     # s (strictly locked to verified 120s)
+VERIFIED_NOREPINEPHRINE_CONCENTRATION = 14.0  # ug/mL (standard stock dilution from SepticShock reference)
+DEFAULT_NOREPINEPHRINE_CONCENTRATION_UG_ML = 14.0
+
+MIN_NOREPINEPHRINE_RATE_ML_PER_MIN = 0.1
+MAX_NOREPINEPHRINE_RATE_ML_PER_MIN = 5.0
+DEFAULT_NOREPINEPHRINE_RATE_ML_PER_MIN = 1.0
+VERIFIED_NOREPINEPHRINE_RATE = 1.0           # backward-compatibility alias
+
+MIN_NOREPINEPHRINE_DURATION_S = 10.0
+MAX_NOREPINEPHRINE_DURATION_S = 600.0
+DEFAULT_NOREPINEPHRINE_DURATION_S = 120.0
+VERIFIED_NOREPINEPHRINE_DURATION = 120.0     # backward-compatibility alias
 
 
 @dataclass(frozen=True)
@@ -173,39 +182,48 @@ class BioGearsSalineBolus:
 
 @dataclass(frozen=True)
 class BioGearsNorepinephrineInfusion:
-    """Verified Norepinephrine Infusion for sequential What-If scenarios.
+    """Configurable Norepinephrine Infusion for sequential What-If scenarios.
 
     Maps to BioGears SubstanceInfusionData with Norepinephrine substance.
-    Concentration is strictly locked to 14.0 ug/mL.
-    Rate is strictly locked to 1.0 mL/min.
-    Duration is strictly locked to verified 120.0 seconds.
-    Do not expose configurable concentration, rate, or duration.
+    Supported infusion rates: 0.1 to 5.0 mL/min (default: 1.0 mL/min).
+    Supported infusion durations: 10.0 to 600.0 s (default: 120.0 s).
+    Concentration is standard stock dilution locked to 14.0 ug/mL.
     """
 
     start_time_s: float = 60.0
-    concentration_ug_ml: float = VERIFIED_NOREPINEPHRINE_CONCENTRATION
-    rate_ml_per_min: float = VERIFIED_NOREPINEPHRINE_RATE
-    duration_s: float = VERIFIED_NOREPINEPHRINE_DURATION
+    concentration_ug_ml: float = DEFAULT_NOREPINEPHRINE_CONCENTRATION_UG_ML
+    rate_ml_per_min: float = DEFAULT_NOREPINEPHRINE_RATE_ML_PER_MIN
+    duration_s: float = DEFAULT_NOREPINEPHRINE_DURATION_S
 
     def __post_init__(self):
-        if not isinstance(self.start_time_s, (int, float)) or self.start_time_s < 0:
+        import math
+        if not isinstance(self.start_time_s, (int, float)) or math.isnan(self.start_time_s) or math.isinf(self.start_time_s) or self.start_time_s < 0:
             raise BioGearsScenarioBuilderError(
-                f"BioGearsNorepinephrineInfusion: start_time_s must be non-negative, got {self.start_time_s!r}."
+                f"BioGearsNorepinephrineInfusion: start_time_s must be non-negative and finite, got {self.start_time_s!r}."
             )
         if self.concentration_ug_ml != VERIFIED_NOREPINEPHRINE_CONCENTRATION:
             raise BioGearsScenarioBuilderError(
-                f"BioGearsNorepinephrineInfusion: concentration_ug_ml {self.concentration_ug_ml} is unverified. "
-                f"Concentration is strictly locked to {VERIFIED_NOREPINEPHRINE_CONCENTRATION} ug/mL."
+                f"BioGearsNorepinephrineInfusion: concentration_ug_ml {self.concentration_ug_ml} is unsupported. "
+                f"BioGears substance models are calibrated to standard stock dilution of {VERIFIED_NOREPINEPHRINE_CONCENTRATION} ug/mL. "
+                f"Titration must be achieved via rate_ml_per_min and duration_s."
             )
-        if self.rate_ml_per_min != VERIFIED_NOREPINEPHRINE_RATE:
+        if not isinstance(self.rate_ml_per_min, (int, float)) or math.isnan(self.rate_ml_per_min) or math.isinf(self.rate_ml_per_min) or self.rate_ml_per_min <= 0:
             raise BioGearsScenarioBuilderError(
-                f"BioGearsNorepinephrineInfusion: rate_ml_per_min {self.rate_ml_per_min} is unverified. "
-                f"Rate is strictly locked to {VERIFIED_NOREPINEPHRINE_RATE} mL/min."
+                f"BioGearsNorepinephrineInfusion: rate_ml_per_min must be a positive finite number, got {self.rate_ml_per_min!r}."
             )
-        if self.duration_s != VERIFIED_NOREPINEPHRINE_DURATION:
+        if self.rate_ml_per_min < MIN_NOREPINEPHRINE_RATE_ML_PER_MIN or self.rate_ml_per_min > MAX_NOREPINEPHRINE_RATE_ML_PER_MIN:
             raise BioGearsScenarioBuilderError(
-                f"BioGearsNorepinephrineInfusion: duration_s {self.duration_s} is unverified. "
-                f"Duration is strictly locked to verified {VERIFIED_NOREPINEPHRINE_DURATION} s."
+                f"BioGearsNorepinephrineInfusion: rate_ml_per_min {self.rate_ml_per_min} is outside supported range "
+                f"[{MIN_NOREPINEPHRINE_RATE_ML_PER_MIN}, {MAX_NOREPINEPHRINE_RATE_ML_PER_MIN}] mL/min."
+            )
+        if not isinstance(self.duration_s, (int, float)) or math.isnan(self.duration_s) or math.isinf(self.duration_s) or self.duration_s <= 0:
+            raise BioGearsScenarioBuilderError(
+                f"BioGearsNorepinephrineInfusion: duration_s must be a positive finite number, got {self.duration_s!r}."
+            )
+        if self.duration_s < MIN_NOREPINEPHRINE_DURATION_S or self.duration_s > MAX_NOREPINEPHRINE_DURATION_S:
+            raise BioGearsScenarioBuilderError(
+                f"BioGearsNorepinephrineInfusion: duration_s {self.duration_s} is outside supported range "
+                f"[{MIN_NOREPINEPHRINE_DURATION_S}, {MAX_NOREPINEPHRINE_DURATION_S}] s."
             )
 
     @property
@@ -698,18 +716,18 @@ def _validate_sequential_scenario(scenario: BioGearsSequentialScenario) -> None:
         elif isinstance(action, BioGearsNorepinephrineInfusion):
             if action.concentration_ug_ml != VERIFIED_NOREPINEPHRINE_CONCENTRATION:
                 raise BioGearsScenarioBuilderError(
-                    f"actions[{i}]: concentration_ug_ml {action.concentration_ug_ml} is unverified. "
+                    f"actions[{i}]: concentration_ug_ml {action.concentration_ug_ml} is unsupported. "
                     f"Supported concentration: {VERIFIED_NOREPINEPHRINE_CONCENTRATION} ug/mL."
                 )
-            if action.rate_ml_per_min != VERIFIED_NOREPINEPHRINE_RATE:
+            if action.rate_ml_per_min < MIN_NOREPINEPHRINE_RATE_ML_PER_MIN or action.rate_ml_per_min > MAX_NOREPINEPHRINE_RATE_ML_PER_MIN:
                 raise BioGearsScenarioBuilderError(
-                    f"actions[{i}]: rate_ml_per_min {action.rate_ml_per_min} is unverified. "
-                    f"Supported rate: {VERIFIED_NOREPINEPHRINE_RATE} mL/min."
+                    f"actions[{i}]: rate_ml_per_min {action.rate_ml_per_min} is outside supported range "
+                    f"[{MIN_NOREPINEPHRINE_RATE_ML_PER_MIN}, {MAX_NOREPINEPHRINE_RATE_ML_PER_MIN}] mL/min."
                 )
-            if action.duration_s != VERIFIED_NOREPINEPHRINE_DURATION:
+            if action.duration_s < MIN_NOREPINEPHRINE_DURATION_S or action.duration_s > MAX_NOREPINEPHRINE_DURATION_S:
                 raise BioGearsScenarioBuilderError(
-                    f"actions[{i}]: duration_s {action.duration_s} is unverified. "
-                    f"Supported duration: {VERIFIED_NOREPINEPHRINE_DURATION} s."
+                    f"actions[{i}]: duration_s {action.duration_s} is outside supported range "
+                    f"[{MIN_NOREPINEPHRINE_DURATION_S}, {MAX_NOREPINEPHRINE_DURATION_S}] s."
                 )
         else:
             raise BioGearsScenarioBuilderError(

@@ -578,11 +578,16 @@ class TestBioGearsNorepinephrineInfusion:
 
     def test_rejection_of_modified_rate(self):
         with pytest.raises(BioGearsScenarioBuilderError, match="rate_ml_per_min"):
-            BioGearsNorepinephrineInfusion(rate_ml_per_min=2.0)
+            BioGearsNorepinephrineInfusion(rate_ml_per_min=10.0)
 
     def test_rejection_of_modified_duration(self):
         with pytest.raises(BioGearsScenarioBuilderError, match="duration_s"):
-            BioGearsNorepinephrineInfusion(duration_s=60.0)
+            BioGearsNorepinephrineInfusion(duration_s=700.0)
+
+    def test_acceptance_of_configurable_rate_and_duration(self):
+        inf = BioGearsNorepinephrineInfusion(rate_ml_per_min=2.0, duration_s=60.0)
+        assert inf.rate_ml_per_min == 2.0
+        assert inf.duration_s == 60.0
 
     def test_rejection_of_zero_duration(self):
         with pytest.raises(BioGearsScenarioBuilderError, match="duration_s"):

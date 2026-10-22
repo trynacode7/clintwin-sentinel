@@ -22,6 +22,13 @@ from backend.biogears_scenario_builder import (
     VERIFIED_NOREPINEPHRINE_CONCENTRATION,
     VERIFIED_NOREPINEPHRINE_RATE,
     VERIFIED_NOREPINEPHRINE_DURATION,
+    MIN_NOREPINEPHRINE_RATE_ML_PER_MIN,
+    MAX_NOREPINEPHRINE_RATE_ML_PER_MIN,
+    DEFAULT_NOREPINEPHRINE_RATE_ML_PER_MIN,
+    MIN_NOREPINEPHRINE_DURATION_S,
+    MAX_NOREPINEPHRINE_DURATION_S,
+    DEFAULT_NOREPINEPHRINE_DURATION_S,
+    DEFAULT_NOREPINEPHRINE_CONCENTRATION_UG_ML,
 )
 from backend.biogears_sequential_execution import (
     PhysiologicalSnapshot,
@@ -105,9 +112,18 @@ class NorepinephrineActionRequest(BaseModel):
 
     type: Literal["norepinephrine"] = Field("norepinephrine", description="Action type: strictly 'norepinephrine'.")
     start_time_s: float = Field(..., ge=0, description="Start timestamp on the continuous timeline in seconds.")
-    concentration_ug_ml: float = Field(14.0, description="Concentration in ug/mL. Verified standard: 14.0 ug/mL.")
-    rate_ml_per_min: float = Field(1.0, description="Infusion rate in mL/min. Verified standard: 1.0 mL/min.")
-    duration_s: float = Field(120.0, description="Active infusion duration in seconds. Verified standard: 120.0 s.")
+    concentration_ug_ml: float = Field(
+        DEFAULT_NOREPINEPHRINE_CONCENTRATION_UG_ML,
+        description=f"Concentration in ug/mL. Standard stock dilution: {DEFAULT_NOREPINEPHRINE_CONCENTRATION_UG_ML} ug/mL.",
+    )
+    rate_ml_per_min: float = Field(
+        DEFAULT_NOREPINEPHRINE_RATE_ML_PER_MIN,
+        description=f"Infusion rate in mL/min. Supported range: {MIN_NOREPINEPHRINE_RATE_ML_PER_MIN} to {MAX_NOREPINEPHRINE_RATE_ML_PER_MIN} mL/min.",
+    )
+    duration_s: float = Field(
+        DEFAULT_NOREPINEPHRINE_DURATION_S,
+        description=f"Active infusion duration in seconds. Supported range: {MIN_NOREPINEPHRINE_DURATION_S} to {MAX_NOREPINEPHRINE_DURATION_S} s.",
+    )
     volume_ml: Optional[float] = Field(None, description="Forbidden for norepinephrine infusions.")
 
     @field_validator("volume_ml")
@@ -123,27 +139,39 @@ class NorepinephrineActionRequest(BaseModel):
     @field_validator("concentration_ug_ml")
     @classmethod
     def validate_concentration(cls, v: float) -> float:
+        import math
+        if not isinstance(v, (int, float)) or math.isnan(v) or math.isinf(v):
+            raise ValueError("concentration_ug_ml must be a finite number.")
         if v != VERIFIED_NOREPINEPHRINE_CONCENTRATION:
             raise ValueError(
-                f"Invalid concentration_ug_ml {v}. Supported verified concentration is {VERIFIED_NOREPINEPHRINE_CONCENTRATION} ug/mL."
+                f"Invalid concentration_ug_ml {v}. Supported standard stock concentration is {VERIFIED_NOREPINEPHRINE_CONCENTRATION} ug/mL. "
+                "BioGears substance models are calibrated to standard stock dilution; adjust rate_ml_per_min or duration_s to titrate dose."
             )
         return float(v)
 
     @field_validator("rate_ml_per_min")
     @classmethod
     def validate_rate(cls, v: float) -> float:
-        if v != VERIFIED_NOREPINEPHRINE_RATE:
+        import math
+        if not isinstance(v, (int, float)) or math.isnan(v) or math.isinf(v):
+            raise ValueError("rate_ml_per_min must be a finite number.")
+        if v < MIN_NOREPINEPHRINE_RATE_ML_PER_MIN or v > MAX_NOREPINEPHRINE_RATE_ML_PER_MIN:
             raise ValueError(
-                f"Invalid rate_ml_per_min {v}. Supported verified rate is {VERIFIED_NOREPINEPHRINE_RATE} mL/min."
+                f"Invalid rate_ml_per_min {v}. Supported norepinephrine infusion rates range from "
+                f"{MIN_NOREPINEPHRINE_RATE_ML_PER_MIN} to {MAX_NOREPINEPHRINE_RATE_ML_PER_MIN} mL/min."
             )
         return float(v)
 
     @field_validator("duration_s")
     @classmethod
     def validate_duration(cls, v: float) -> float:
-        if v != VERIFIED_NOREPINEPHRINE_DURATION:
+        import math
+        if not isinstance(v, (int, float)) or math.isnan(v) or math.isinf(v):
+            raise ValueError("duration_s must be a finite number.")
+        if v < MIN_NOREPINEPHRINE_DURATION_S or v > MAX_NOREPINEPHRINE_DURATION_S:
             raise ValueError(
-                f"Invalid duration_s {v}. Supported verified duration is {VERIFIED_NOREPINEPHRINE_DURATION} s."
+                f"Invalid duration_s {v}. Supported norepinephrine infusion durations range from "
+                f"{MIN_NOREPINEPHRINE_DURATION_S} to {MAX_NOREPINEPHRINE_DURATION_S} s."
             )
         return float(v)
 
