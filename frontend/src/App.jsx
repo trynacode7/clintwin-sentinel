@@ -170,7 +170,7 @@ function MethodologyModal({ isOpen, onClose }) {
             </div>
             <p className="text-slate-400 leading-relaxed text-[11px]">
               <strong className="text-slate-300">Cohort Baseline:</strong> Retrieves stored model predictions precomputed across the patient admission windows during cohort dataset evaluation. <br />
-              <strong className="text-slate-300">Dynamic ML Model:</strong> Executes a live forward pass via <code>POST /predict</code> using the patient's continuous 72-window trajectory, generating real-time deterioration probability and gradient-derived feature attributions. Both pathways evaluate the identical 46-feature BiLSTM architecture; live inference execution does not imply higher clinical accuracy over precomputed cohort benchmarks.
+              <strong className="text-slate-300">Dynamic ML Model:</strong> Executes a live forward pass via <code>POST /predict</code> using the patient's 6-hour input window (hourly resolution), generating real-time deterioration probability and gradient-derived feature attributions. Both pathways evaluate the identical 112-feature BiLSTM architecture; live inference execution does not imply higher clinical accuracy over precomputed cohort benchmarks.
             </p>
           </div>
 

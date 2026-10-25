@@ -147,7 +147,17 @@ LSTM_NUM_LAYERS = 1
 LSTM_DROPOUT = 0.2
 LSTM_BIDIRECTIONAL = True
 
-# Transformer
+# Transformer — NOT the primary model (decision: BiLSTM-only for reported
+# results). Kept, configured, and trainable only as an optional ablation
+# comparison, not as a second production model. Rationale: INPUT_WINDOW
+# above is only 6 hourly timesteps — self-attention's main advantage
+# (capturing long-range dependencies) has little to act on at this
+# sequence length, and with a comparatively small patient cohort a
+# Transformer's weaker inductive bias is more prone to overfitting with
+# no expected upside over the BiLSTM. See backend/train.py's module
+# docstring and the project's end-to-end-completion-roadmap.md for the
+# full reasoning. Live inference (backend/api.py) always prefers a
+# trained LSTM checkpoint over a Transformer one if both exist.
 TRANSFORMER_D_MODEL = 64
 TRANSFORMER_NHEAD = 4
 TRANSFORMER_NUM_LAYERS = 2

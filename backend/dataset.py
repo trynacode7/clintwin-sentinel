@@ -48,6 +48,7 @@ class ICUDataset(Dataset):
         feature_cols: List[str],
         window_size: int = config.INPUT_WINDOW,
         step_size: int = config.SLIDING_STEP,
+        track_stay_ids: bool = False,
     ):
         """
         Args:
@@ -55,11 +56,20 @@ class ICUDataset(Dataset):
             feature_cols: List of feature column names to use as input
             window_size: Number of timesteps per input window
             step_size: Stride for sliding window
+            track_stay_ids: if True, each window also carries its source
+                stay_id as a 4th element, so predictions can later be
+                joined back to subject-level metadata (age, sex) for
+                subgroup evaluation — see evaluate.py's
+                subgroup_evaluation() and create_eval_loader_with_stay_ids()
+                below. Additive and opt-in: default False preserves the
+                exact (X, y, mask) 3-tuple every existing caller (train.py,
+                evaluate_model(), get_all_labels()) already expects.
         """
         self.window_size = window_size
         self.feature_cols = feature_cols
-        self.windows: List[Tuple[np.ndarray, float, np.ndarray]] = []
-        
+        self.track_stay_ids = track_stay_ids
+        self.windows: List[Tuple] = []
+
         self._generate_windows(df, step_size)
         logger.info(f"Created dataset with {len(self.windows)} windows")
     
@@ -96,8 +106,11 @@ class ICUDataset(Dataset):
                 
                 # Replace NaN in features with 0 (model uses mask)
                 X = np.nan_to_num(X, nan=0.0)
-                
-                self.windows.append((X, labels[-1], mask))
+
+                if self.track_stay_ids:
+                    self.windows.append((X, labels[-1], mask, stay_id))
+                else:
+                    self.windows.append((X, labels[-1], mask))
             else:
                 # Generate sliding windows
                 for start in range(0, n_steps - self.window_size + 1, step_size):
@@ -119,13 +132,24 @@ class ICUDataset(Dataset):
                     
                     # Replace NaN with 0 (model uses mask + missingness indicators)
                     X = np.nan_to_num(X, nan=0.0)
-                    
-                    self.windows.append((X, y, mask))
-    
+
+                    if self.track_stay_ids:
+                        self.windows.append((X, y, mask, stay_id))
+                    else:
+                        self.windows.append((X, y, mask))
+
     def __len__(self) -> int:
         return len(self.windows)
-    
-    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+
+    def __getitem__(self, idx: int):
+        if self.track_stay_ids:
+            X, y, mask, stay_id = self.windows[idx]
+            return (
+                torch.tensor(X, dtype=torch.float32),
+                torch.tensor(y, dtype=torch.float32),
+                torch.tensor(mask, dtype=torch.float32),
+                stay_id,
+            )
         X, y, mask = self.windows[idx]
         return (
             torch.tensor(X, dtype=torch.float32),
@@ -188,16 +212,58 @@ def get_all_labels(loader: DataLoader) -> np.ndarray:
     return np.concatenate(all_labels)
 
 
+def create_eval_loader_with_stay_ids(
+    df: pd.DataFrame,
+    feature_cols: List[str],
+    batch_size: int = config.BATCH_SIZE,
+) -> DataLoader:
+    """
+    Build an evaluation-only DataLoader whose batches are
+    (X, y, mask, stay_ids) instead of the usual (X, y, mask) — so a
+    caller can join predictions back to subject-level metadata (age,
+    sex, admission type) for subgroup evaluation. See evaluate.py's
+    subgroup_evaluation().
+
+    Not used anywhere in the training path — this exists purely for
+    evaluation and does not change ICUDataset's default behavior for
+    any existing caller. shuffle=False and drop_last=False
+    deliberately, so every test-split window is evaluated exactly
+    once, in a stable order.
+    """
+    step = max(1, config.INPUT_WINDOW // 6)
+    dataset = ICUDataset(
+        df=df,
+        feature_cols=feature_cols,
+        window_size=config.INPUT_WINDOW,
+        step_size=step,
+        track_stay_ids=True,
+    )
+    return DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        drop_last=False,
+        num_workers=0,
+    )
+
+
 if __name__ == "__main__":
+    # Smoke-test block only — not used by training or evaluation.
+    # Was importing the old ad-hoc backend.labels (lactate/MAP/HR rule)
+    # instead of the real backend.labels_sofa, and ran engineer_features
+    # before create_labels — both fixed here to match the documented
+    # required order (see preprocessing.preprocess()'s docstring and
+    # backend/train.py's Step 1-4 ordering) so this smoke test actually
+    # reflects the real pipeline.
     from preprocessing import preprocess
     from feature_engineering import engineer_features, get_engineered_feature_cols
-    from labels import create_labels
-    
+    from labels_sofa import create_labels
+
     result = preprocess()
-    
+
     for split in ["train", "val", "test"]:
-        result[split] = engineer_features(result[split])
         result[split] = create_labels(result[split])
+        result[split] = engineer_features(result[split])
     
     feature_cols = get_engineered_feature_cols(result["train"])
     loaders = create_dataloaders(result, feature_cols)

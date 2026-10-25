@@ -75,6 +75,7 @@ distinction is preserved if it's ever wired in.
 import os
 import sys
 import json
+import joblib
 import numpy as np
 import torch
 import logging
@@ -92,18 +93,26 @@ logger = setup_logging()
 # Lazy imports to avoid slow startup
 _model = None
 _feature_cols = None
-_digital_twin = None
+_scaler = None
 _demo_data = None
+# NOTE: there is deliberately no separate `_digital_twin` global anymore —
+# see _get_digital_twin()'s docstring below for why.
 
 
 def _load_model():
     """Load trained model or create a demo model."""
-    global _model, _feature_cols
+    global _model, _feature_cols, _scaler
     
     from backend.lstm_model import ICUBiLSTM
     from backend.transformer_model import ICUTransformer
     
-    # Try loading LSTM first, then Transformer
+    # Try loading LSTM first, then Transformer. This order is deliberate,
+    # not incidental: BiLSTM is this project's primary/reported model —
+    # the Transformer is kept only as an optional ablation comparison
+    # (see backend/train.py's module docstring and config.py's Transformer
+    # section for why). Live inference should never silently serve a
+    # Transformer checkpoint just because an LSTM one happens to be
+    # missing without that being an explicit, visible choice.
     for model_path, ModelClass, model_type in [
         (config.LSTM_MODEL_PATH, ICUBiLSTM, "lstm"),
         (config.TRANSFORMER_MODEL_PATH, ICUTransformer, "transformer"),
@@ -149,42 +158,129 @@ def _load_model():
             model.load_state_dict(state_dict)
             model.eval()
             _model = (model, model_type)
+
+            # Load the scaler fit during training (preprocessing.fit_scaler /
+            # scale_splits, saved to config.SCALER_PATH). POST /predict must
+            # standardize incoming raw vitals exactly the way the model was
+            # trained on (via preprocessing.prepare_inference_sequence) — see
+            # that function's docstring. Previously /predict skipped both
+            # scaling AND feature engineering entirely, feeding raw clinical
+            # values for ~7 fields and literal 0.0 for the rest of the
+            # model's ~40+ expected features into every request — that's why
+            # risk scores clustered near a single constant value (~0.49)
+            # regardless of patient. Fail loud rather than silently repeating
+            # that bug if no scaler exists yet.
+            #
+            # IMPORTANT — this disk read is only a PRE-SYNC fallback value,
+            # not the final one: preprocessing.fit_scaler() unconditionally
+            # OVERWRITES config.SCALER_PATH every time an InferenceService is
+            # built (see inference_service.py), and lifespan() builds a real
+            # InferenceService right after calling this function. Without a
+            # sync step, /predict would end up using a scaler snapshot that
+            # was already stale the instant InferenceService finished — two
+            # independently-fit scalers for the same model, exactly the same
+            # class of bug Task #4 fixed for the digital twin's PCA. See
+            # lifespan(), which overwrites _scaler with InferenceService's
+            # own `.scaler` right after building it.
+            if os.path.exists(config.SCALER_PATH):
+                _scaler = joblib.load(config.SCALER_PATH)
+                logger.info(f"Loaded scaler from {config.SCALER_PATH} (pre-sync fallback)")
+            else:
+                _scaler = None
+                logger.warning(
+                    f"No scaler found at {config.SCALER_PATH} — POST /predict will "
+                    f"refuse real inference until training has produced one."
+                )
             return
-    
+
     # No trained model — create demo model
     logger.warning("No trained model found. Creating demo model.")
     input_size = 50
     _feature_cols = [f"feature_{i}" for i in range(input_size)]
+    _scaler = None
     model = ICUBiLSTM(input_size=input_size)
     model.eval()
     _model = (model, "lstm")
 
 
+def _get_scaler():
+    """
+    Return the fitted scaler POST /predict should use to standardize
+    incoming raw vitals, the same pattern as _get_digital_twin() above.
+
+    `_scaler` (set by _load_model(), straight from config.SCALER_PATH
+    on disk) is only a pre-sync fallback value, never the authoritative
+    one. preprocessing.fit_scaler() unconditionally overwrites that one
+    shared file as a side effect of ANY call to it anywhere in the
+    process — including InferenceService's own startup fit, and even
+    an unrelated unit test fitting a scaler on a handful of raw
+    columns — so a scaler read from disk earlier can already be stale
+    or wrong-shaped by the time a request actually uses it (this is
+    exactly how the "X has 18 features, but StandardScaler is
+    expecting 7" crash was triggered while verifying the Task #4 twin
+    fix end-to-end: an earlier fit_scaler() call in the same process
+    had clobbered config.SCALER_PATH with a scaler fit on only the raw,
+    non-engineered vitals columns).
+
+    Resolving this lazily from InferenceService at request time — like
+    _get_digital_twin() already does — means /predict always uses the
+    exact scaler object InferenceService fit for the real roster
+    forward pass, regardless of whether this module's lifespan()
+    happened to run first (e.g. a TestClient(app) used without a
+    `with` block never triggers ASGI lifespan events at all, so
+    nothing that only ran inside lifespan() can be relied on here).
+    """
+    global _scaler
+    try:
+        from backend.inference_service import get_inference_service
+        svc = get_inference_service(model_type="lstm")
+        if svc.scaler is not None:
+            _scaler = svc.scaler
+    except Exception as e:
+        # No trained checkpoint / InferenceService couldn't build (e.g.
+        # the untrained demo-model fallback path in _load_model()) —
+        # fall back to whatever _load_model() already set, which may
+        # be None (POST /predict then correctly refuses with a 503).
+        logger.warning(f"_get_scaler(): could not resolve InferenceService's scaler ({e}); using fallback.")
+    return _scaler
+
+
 def _get_digital_twin():
     """
-    Get or create the digital twin instance used by the LEGACY POST
-    /predict endpoint below.
+    Get the digital twin instance used by the LEGACY POST /predict
+    endpoint below.
 
-    Phase B fix: this used to call `generate_demo_trajectories()` on
-    startup, seeding the twin with 10 entirely fabricated patient
-    trajectories BEFORE any real prediction ever happened — meaning a
-    real /predict call and nine invented ones lived in the same object,
-    indistinguishable to any caller. That fabricated seeding is removed.
-    A fresh, real POST /predict call now starts this twin's trajectory
-    from nothing (correct, if PCA-cold-start-affected for the first ~10
-    calls — see digital_twin.py). The NEW /api/* roster-driven endpoints
-    do not use this global twin at all; they use inference_service.py's
-    own DigitalTwin instance, which IS pre-warmed with real z_t vectors
-    from real inference across the whole roster (see
-    InferenceService._warm_pca).
+    Phase B fix (earlier session): this used to call
+    `generate_demo_trajectories()` on startup, seeding the twin with 10
+    entirely fabricated patient trajectories BEFORE any real prediction
+    ever happened. That fabricated seeding was removed, which fixed the
+    fabrication problem but left a narrower one: this function went on
+    to build its OWN separate `DigitalTwin` instance, so /predict's PCA
+    projection was still fit lazily on whatever z_t vectors happened to
+    pass through /predict first — non-reproducible, and degenerate
+    [0, 0] projections for the first ~10 calls after every restart (see
+    digital_twin.py's project_to_2d/_fit_pca). Meanwhile
+    inference_service.py's InferenceService already solves exactly this
+    problem for the /api/* roster endpoints via `_warm_pca()`, which
+    fits one DigitalTwin's PCA on real z_t vectors from a full,
+    deterministically-ordered (sorted by stay_id) forward pass across
+    the whole roster before any trajectory point is recorded.
+
+    Phase C fix (this change): there is no good reason for two
+    independently-fit PCA bases over the same latent space of the same
+    trained model, one reproducible and one not. So /predict now reuses
+    the SAME DigitalTwin instance InferenceService already builds and
+    pre-warms, instead of building a second one. This makes /predict's
+    2D latent projections directly comparable to the roster endpoints'
+    (identical PCA basis) and reproducible across restarts (same
+    checkpoint + same roster -> same warm-up order -> same fitted PCA),
+    rather than depending on the arrival order of real-time /predict
+    calls. lifespan() below builds the InferenceService before this is
+    first called, so in normal startup this never triggers a second,
+    redundant roster forward pass.
     """
-    global _digital_twin
-
-    if _digital_twin is None:
-        from backend.digital_twin import DigitalTwin
-        _digital_twin = DigitalTwin(latent_dim=128)
-
-    return _digital_twin
+    from backend.inference_service import get_inference_service
+    return get_inference_service(model_type="lstm").digital_twin
 
 
 def _generate_demo_data():
@@ -343,11 +439,36 @@ async def lifespan(app: FastAPI):
     (NoTrainedModelError), the API should fail loudly at startup and
     refuse to come up — not serve broken/fabricated responses on the
     first real request.
+
+    Phase C: InferenceService is now built BEFORE _get_digital_twin()/
+    _generate_demo_data() run, because _get_digital_twin() no longer
+    builds its own DigitalTwin — it returns InferenceService's own
+    instance, already pre-warmed with real z_t vectors from the full
+    roster (see _get_digital_twin()'s docstring). Building it first
+    means /predict's very first call, right after startup, already
+    gets the correct pre-warmed PCA basis instead of a cold one.
+
+    Phase C also fixes a second, related duplicate-state bug found
+    while verifying the twin fix end-to-end: _load_model() reads
+    config.SCALER_PATH straight off disk into `_scaler`, but
+    preprocessing.fit_scaler() (called inside InferenceService.__init__
+    via scale_splits()) unconditionally OVERWRITES that same file with
+    a freshly refit scaler every time an InferenceService is built —
+    and, worse, ANY call anywhere in the process to fit_scaler() (e.g.
+    a unit test fitting a scaler on a handful of raw columns) clobbers
+    this one shared file as a side effect. So the on-disk-loaded
+    `_scaler` can already be a stale, or even wrong-shaped, snapshot
+    by the time it's used, even though /predict and the /api/* roster
+    endpoints claim to serve the same trained model. Fixed the same
+    way as the digital twin above: POST /predict below no longer uses
+    the module-level `_scaler` global directly — it calls
+    `_get_scaler()`, which always resolves to InferenceService's own
+    fitted scaler at request time (lazily, so this is correct even if
+    something -- a test harness among them -- never runs this
+    lifespan function at all; see _get_scaler()'s docstring).
     """
     logger.info("Starting ICU Digital Twin API...")
     _load_model()
-    _get_digital_twin()
-    _generate_demo_data()
 
     from backend.inference_service import get_inference_service
     svc = get_inference_service(model_type="lstm")
@@ -355,6 +476,9 @@ async def lifespan(app: FastAPI):
         f"Real InferenceService ready: {len(svc.roster)} roster patients, "
         f"checkpoint={svc.checkpoint_meta.get('checkpoint_path')}"
     )
+
+    _get_digital_twin()
+    _generate_demo_data()
 
     logger.info("API ready!")
     yield
@@ -853,30 +977,52 @@ async def predict(request: PredictRequest):
     (never SHAP — see explainability.py's module docstring), and explanation.
     """
     global _model, _feature_cols
-    
+
     if _model is None:
         _load_model()
-    
+
     model, model_type = _model
     device = next(model.parameters()).device
-    
+
+    # See _get_scaler()'s docstring: resolves lazily to InferenceService's
+    # own fitted scaler rather than trusting the module-level `_scaler`
+    # global directly, which can be stale or wrong-shaped.
+    scaler = _get_scaler()
+    if scaler is None:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "No fitted scaler available (config.SCALER_PATH is missing). "
+                "POST /predict cannot run real inference without it — train a "
+                "model first (python -m backend.train), which fits and saves "
+                "the scaler as a side effect. Refusing to silently fall back "
+                "to unscaled input, which previously caused near-constant, "
+                "uninformative risk scores for every patient."
+            ),
+        )
+
+    if not request.patient_data:
+        raise HTTPException(status_code=422, detail="patient_data must be a non-empty list of timestep records.")
+
     try:
-        # Convert input to tensor
-        n_features = len(_feature_cols)
-        n_steps = len(request.patient_data)
-        
-        X = np.zeros((1, max(n_steps, config.INPUT_WINDOW), n_features), dtype=np.float32)
-        
-        for t, step_data in enumerate(request.patient_data):
-            for j, col in enumerate(_feature_cols):
-                if col in step_data:
-                    val = step_data[col]
-                    if val is not None and not np.isnan(float(val)):
-                        X[0, t, j] = float(val)
-        
-        X_tensor = torch.tensor(X).to(device)
-        mask = torch.ones(1, X.shape[1]).to(device)
-        
+        # Build a properly scaled, feature-engineered input tensor using the
+        # SAME pipeline training used (resample -> missingness indicators ->
+        # feature engineering on raw clinical values -> scaling with the
+        # trained scaler -> exact feature_cols ordering -> windowing). See
+        # preprocessing.prepare_inference_sequence's docstring. This replaces
+        # a previous ad-hoc loop that fed raw, unscaled vitals for only the
+        # ~7 fields the frontend sends and left the model's other ~40
+        # expected features at literal 0.0 for every request — the root
+        # cause of risk scores clustering near one constant value regardless
+        # of patient (see known-issues-checklist.md).
+        from backend.preprocessing import prepare_inference_sequence
+
+        X_tensor, mask, _engineered_df = prepare_inference_sequence(
+            request.patient_data, scaler, _feature_cols, window_size=config.INPUT_WINDOW
+        )
+        X_tensor = X_tensor.to(device)
+        mask = mask.to(device)
+
         # Forward pass
         model.eval()
         with torch.no_grad():

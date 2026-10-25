@@ -5,8 +5,8 @@ Tests all 13 core requirements specified in Phase 7:
   1. preprocessing works
   2. labels contain both classes
   3. scaler is train-only
-  4. feature count = 46
-  5. model accepts 46 features
+  4. feature count = 112
+  5. model accepts 112 features
   6. model output is finite and between 0 and 1
   7. /predict works
   8. invalid patient returns 404
@@ -38,7 +38,11 @@ from backend.preprocessing import (
     resample_all,
     prepare_inference_sequence,
 )
-from backend.labels import create_labels
+from backend.labels_sofa import create_labels  # the real SOFA/Sepsis-3 labeling
+# used by training (backend.train) and evaluation (backend.evaluate) — was
+# importing the deprecated ad-hoc backend.labels rule here, which meant this
+# test validated a labeling function that isn't the one actually used to
+# train or evaluate the model.
 from backend.feature_engineering import engineer_features, get_engineered_feature_cols
 from backend.lstm_model import ICUBiLSTM
 from backend.api import app
@@ -63,8 +67,34 @@ def test_1_preprocessing_works():
 
 # ─── 2. Labels Contain Both Classes ──────────────────────────────────────────
 def test_2_labels_contain_both_classes():
-    """Verify that future-window label generation produces both 0 and 1 classes."""
-    df_raw = generate_synthetic_data(n_patients=20, hours_per_stay=48)
+    """
+    Verify that future-window label generation produces both 0 and 1 classes.
+
+    Uses the real MIMIC-shaped generator (backend.synthetic_data.generator),
+    sepsis-archetype-weighted, NOT utils.generate_synthetic_data() — a real
+    bug found while fixing this test's import (it previously tested against
+    the deprecated backend.labels rule, which never actually ran the real
+    SOFA/Sepsis-3 logic). Once pointed at the real backend.labels_sofa,
+    utils.generate_synthetic_data()'s output produces ZERO suspected-
+    infection-eligible windows (confirmed empirically up to n_patients=100,
+    seeded) — it has no antibiotic/culture-order signal at all, so the
+    Sepsis-3 cohort restriction can structurally never admit a positive
+    case from it. This isn't flakiness; that generator and the real label
+    definition are simply incompatible. The MIMIC-shaped generator (used by
+    generate_synthetic_data.py, the one that actually produces
+    data/synthetic/processed/ml_dataset.csv for real training) does carry
+    that signal via its "sepsis" archetype.
+    """
+    from utils import set_seed
+    from backend.synthetic_data.generator import GeneratorConfig, generate_cohort
+    from backend.synthetic_data.extract_to_ml_dataset import extract
+
+    set_seed(config.SEED)
+    weights = {"stable": 0.1, "improving": 0.05, "deteriorating": 0.15, "sepsis": 0.6, "recovery": 0.1}
+    cfg = GeneratorConfig(n_patients=15, seed=config.SEED, archetype_weights=weights)
+    raw_tables = generate_cohort(cfg)
+    df_raw = extract(raw_tables)
+
     resampled = resample_all(df_raw)
     with_ind = add_missingness_indicators(resampled)
     labeled = create_labels(with_ind)
@@ -91,7 +121,8 @@ def test_3_scaler_is_train_only():
 
 
 # ─── 4. Feature Count = 112 ──────────────────────────────────────────────────
-def test_4_feature_count_is_46():
+def test_4_feature_count_is_112():  # renamed from _is_46 for clarity — body
+    # already correctly asserted 112; only the function name was stale.
     """Verify that feature engineering produces the expected engineered features."""
     df_raw = generate_synthetic_data(n_patients=5, hours_per_stay=24)
     resampled = resample_all(df_raw)
@@ -102,7 +133,7 @@ def test_4_feature_count_is_46():
 
 
 # ─── 5. Model Accepts Features ────────────────────────────────────────────────
-def test_5_model_accepts_46_features():
+def test_5_model_accepts_112_features():  # renamed from _46_features — body
     """Verify BiLSTM accepts input sequences and returns 128-D hidden representation."""
     model = ICUBiLSTM(input_size=112)
     x = torch.randn(2, config.INPUT_WINDOW, 112)

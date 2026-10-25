@@ -1,6 +1,19 @@
 """
 labels.py — Future-Window Label Creation
 ==========================================
+*** DEPRECATED — NOT USED by training, evaluation, or live inference. ***
+Superseded by backend/labels_sofa.py (binary SOFA >=2-point increase
+within a 2-6h horizon, restricted to the Sepsis-3 suspected-infection
+cohort), which is the project's single finalized label definition.
+Kept only for historical reference (and because deleting it outright
+risked more churn than value, since nothing in this repo imports it as
+of this session's audit — both call sites that used to, backend/
+evaluate.py and tests/test_clintwin_validation.py, were real bugs:
+each was silently evaluating/testing against this old rule instead of
+the real one, and have been fixed to import backend.labels_sofa
+instead). Do not import this module anywhere new — use
+backend.labels_sofa.create_labels().
+
 Creates clinical deterioration labels using a FUTURE window approach.
 
 CRITICAL DESIGN DECISIONS:

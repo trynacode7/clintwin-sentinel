@@ -464,19 +464,33 @@ def prepare_inference_sequence(
     Pipeline:
       raw records (dicts)
       → DataFrame formatting & ID/time alignment
-      → 5-minute resampling (resample_stay)
+      → resampling at config.RESAMPLE_FREQ (resample_stay)
       → LOCF / interpolation
       → missingness indicators & time-since-obs (add_missingness_indicators)
-      → standardization with fitted scaler (apply_scaler)
-      → feature engineering (engineer_features)
+      → feature engineering on RAW clinical values (engineer_features)
+      → standardization with fitted scaler, AFTER engineering (apply_scaler)
       → exact feature_cols ordering
       → window padding/truncation (INPUT_WINDOW timesteps)
-      
+
+    The engineer-then-scale order is REQUIRED, not arbitrary — see
+    scale_splits()'s docstring immediately above this function. Deltas,
+    rolling stats, and shock_index must be computed from real clinical
+    units (e.g. shock_index = heart_rate / MAP only means something in
+    real units); computing them from already-z-scored values silently
+    corrupts every one of those features. This function used to scale
+    before engineering — a real bug, found because it's the inverse of
+    every other call site in this codebase (train.py, this file's own
+    __main__ block) and produced near-constant, uninformative risk
+    scores in POST /predict regardless of patient — fixed here.
+
     Args:
         raw_records: List of dictionaries representing patient timesteps
-        scaler: Pre-fitted StandardScaler (trained on config.ALL_FEATURE_COLS)
+        scaler: Pre-fitted StandardScaler (trained on config.ALL_FEATURE_COLS,
+            AFTER feature engineering — i.e. config.SCALER_PATH as saved by
+            scale_splits()/fit_scaler())
         feature_cols: Required feature columns in exact checkpoint order
-        window_size: Length of input window (default config.INPUT_WINDOW = 72)
+        window_size: Length of input window (default config.INPUT_WINDOW,
+            currently 6 hourly timesteps — see config.py)
         
     Returns:
         X: Tensor of shape [1, window_size, len(feature_cols)]
@@ -528,11 +542,18 @@ def prepare_inference_sequence(
     # 5. Missingness indicators
     with_indicators = add_missingness_indicators(resampled)
 
-    # 6. Apply standardization scaler (only on raw measurement features)
-    scaled = apply_scaler(with_indicators, scaler, config.ALL_FEATURE_COLS)
+    # 6. Apply feature engineering FIRST, on raw (unscaled) clinical values —
+    #    deltas, rolling stats, shock_index, and time features must be
+    #    computed from real clinical units, matching scale_splits()'s
+    #    documented required order.
+    engineered_raw = engineer_features(with_indicators)
 
-    # 7. Apply feature engineering
-    engineered = engineer_features(scaled)
+    # 7. Apply standardization scaler AFTER feature engineering — only to the
+    #    raw measurement columns (config.ALL_FEATURE_COLS), matching
+    #    scale_splits()'s behavior exactly. Engineered columns (deltas,
+    #    rolling stats, shock_index, time features) stay on their natural
+    #    computed scale, unscaled, exactly as training leaves them.
+    engineered = apply_scaler(engineered_raw, scaler, config.ALL_FEATURE_COLS)
 
     # 8. Align with exact feature columns
     for col in feature_cols:

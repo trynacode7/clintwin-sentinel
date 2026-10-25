@@ -1,6 +1,27 @@
 """
 train.py — Training Loop for ICU Risk Prediction Models
 =========================================================
+BiLSTM is the primary, reported model for this project. The Transformer
+architecture (ICUTransformer) is implemented and remains trainable
+through this same file, but is deliberately NOT a second production
+model — it exists only as an optional ablation comparison, kept for
+exactly that purpose (e.g. "did you consider other architectures" in a
+review/defense) rather than deleted outright.
+
+Why BiLSTM-only, not "we didn't get to it": INPUT_WINDOW (config.py) is
+only 6 hourly timesteps. Self-attention's core advantage over a
+recurrent layer is modeling long-range dependencies across long
+sequences — at 6 steps, a BiLSTM already captures the full window
+trivially, so there's little structural advantage left for attention to
+exploit. Combined with a comparatively small patient cohort, the
+Transformer's larger parameter count and weaker inductive bias make it
+more prone to overfitting with no expected benefit here. This is a
+deliberate, documented architecture decision, not an oversight.
+
+Live inference (backend/api.py's POST /predict and the InferenceService)
+always prefers a trained LSTM checkpoint over a Transformer one if both
+exist on disk — see _load_model()'s search order there.
+
 Supports both LSTM and Transformer models with:
   - BCE loss with automatic class weighting (handles imbalanced labels)
   - Adam optimizer
@@ -11,8 +32,8 @@ Supports both LSTM and Transformer models with:
   - Training metrics logging
 
 Usage:
-  python -m backend.train --model lstm
-  python -m backend.train --model transformer
+  python -m backend.train --model lstm           # primary / reported model
+  python -m backend.train --model transformer     # optional ablation only
   python -m backend.train --model lstm --demo  (uses synthetic data)
 """
 
@@ -33,7 +54,7 @@ import config
 from utils import setup_logging, set_seed, get_device, compute_class_weights
 from backend.preprocessing import preprocess
 from backend.feature_engineering import engineer_features, get_engineered_feature_cols
-from backend.labels import create_labels
+from backend.labels_sofa import create_labels
 from backend.dataset import create_dataloaders, get_all_labels
 from backend.lstm_model import ICUBiLSTM
 from backend.transformer_model import ICUTransformer
@@ -234,26 +255,24 @@ def train_model(
     logger.info(f"Training {model_type.upper()} model")
     logger.info("=" * 60)
     
-    # Step 1: Preprocess raw data (without scaling)
+    # Step 1: Preprocess raw data (unscaled)
     logger.info("Step 1/6: Preprocessing (unscaled vitals & labs)...")
-    from backend.preprocessing import fit_scaler, apply_scaler
-    result = preprocess(data_path, scale=False)
+    from backend.preprocessing import scale_splits
+    result = preprocess(data_path)
     
     # Step 2: Create future-window labels on unscaled raw measurements
     logger.info("Step 2/6: Creating future-window labels on raw physiological measurements...")
     for split in ["train", "val", "test"]:
         result[split] = create_labels(result[split])
     
-    # Step 3: Fit scaler on training split ONLY and normalize raw measurement columns
-    logger.info("Step 3/6: Fitting scaler on training data...")
-    scaler = fit_scaler(result["train"], config.ALL_FEATURE_COLS)
-    for split in ["train", "val", "test"]:
-        result[split] = apply_scaler(result[split], scaler, config.ALL_FEATURE_COLS)
-    
-    # Step 4: Feature engineering (deltas, rolling stats, shock index, time features)
-    logger.info("Step 4/6: Feature engineering...")
+    # Step 3: Feature engineering on raw measurements (deltas, rolling stats, shock index, time features)
+    logger.info("Step 3/6: Feature engineering...")
     for split in ["train", "val", "test"]:
         result[split] = engineer_features(result[split])
+    
+    # Step 4: Scale AFTER labeling + feature engineering (see preprocessing.preprocess() docstring)
+    logger.info("Step 4/6: Fitting scaler on training data...")
+    result = scale_splits(result, config.ALL_FEATURE_COLS)
     
     # Step 5: Create DataLoaders
     logger.info("Step 5/6: Creating DataLoaders...")
